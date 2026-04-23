@@ -34,17 +34,17 @@ import {
 } from 'recharts';
 import { ChartVisualizationProps, VegaLiteSpec, RechartsData, CHART_COLORS } from '../types/chart';
 
-const ChartVisualization: React.FC<ChartVisualizationProps> = ({
-  chartContent,
-  height = 380
+const ChartVisualization: React.FC<ChartVisualizationProps> = ({ 
+  chartContent, 
+  height = 380 
 }) => {
   const theme = useTheme();
   const [activeTab, setActiveTab] = useState(0);
 
   // Parse chart data from various formats
-  const parseChartData = (chartSpec: any): {
-    type: string;
-    data: RechartsData[];
+  const parseChartData = (chartSpec: any): { 
+    type: string; 
+    data: RechartsData[]; 
     originalData: RechartsData[];
     title?: string;
   } => {
@@ -53,16 +53,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       // Check for Vega-Lite by: $schema, or presence of required Vega-Lite fields
       const hasVegaLiteSchema = chartSpec.$schema && chartSpec.$schema.includes('vega-lite');
       const hasVegaLiteFields = chartSpec.mark && chartSpec.data && chartSpec.data.values;
-
+      
       if (hasVegaLiteSchema || hasVegaLiteFields) {
         const vegaSpec = chartSpec as VegaLiteSpec;
         const data = vegaSpec.data.values;
         const mark = typeof vegaSpec.mark === 'string' ? vegaSpec.mark : vegaSpec.mark.type;
-
+        
         // Store original data for table view
-        const originalData = data.map((item: any, index: number) => ({
-          id: index,
-          ...item
+        const originalData = data.map((item: any, index: number) => ({ 
+          id: index, 
+          ...item 
         }));
 
         // Transform data for chart rendering
@@ -72,16 +72,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         if (mark === 'line' && data.length > 0) {
           const firstItem = data[0];
           const keys = Object.keys(firstItem);
-
+          
           // Check if this looks like multi-series data that needs pivoting
-          const categoryField = keys.find(key =>
-            key.toUpperCase() === 'CATEGORY' ||
-            key.toLowerCase().includes('category') ||
+          const categoryField = keys.find(key => 
+            key.toUpperCase() === 'CATEGORY' || 
+            key.toLowerCase().includes('category') || 
             key.toLowerCase().includes('group') ||
             key.toLowerCase().includes('series')
           );
-
-          const timeField = keys.find(key =>
+          
+          const timeField = keys.find(key => 
             key.toLowerCase().includes('month') ||
             key.toLowerCase().includes('date') ||
             key.toLowerCase().includes('time') ||
@@ -90,13 +90,13 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
             key.toLowerCase().includes('quarter') ||
             key.toLowerCase().includes('week') ||
             (typeof firstItem[key] === 'string' && (
-              firstItem[key].includes('-') ||
+              firstItem[key].includes('-') || 
               firstItem[key].includes('/') ||
               firstItem[key].match(/^\d{4}$/) // Year format
             ))
           );
-
-          const valueField = keys.find(key =>
+          
+          const valueField = keys.find(key => 
             key.toLowerCase().includes('sales') ||
             key.toLowerCase().includes('value') ||
             key.toLowerCase().includes('amount') ||
@@ -115,22 +115,22 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           if (categoryField && timeField && valueField) {
             // Pivot the data from long to wide format
             const pivotMap = new Map();
-
+            
             data.forEach((row: any) => {
               const timeKey = row[timeField];
               const category = row[categoryField];
               const value = parseFloat(row[valueField]) || 0;
-
+              
               if (!pivotMap.has(timeKey)) {
-                pivotMap.set(timeKey, {
+                pivotMap.set(timeKey, { 
                   name: timeKey,
                   [timeField]: timeKey
                 });
               }
-
+              
               pivotMap.get(timeKey)[category] = value;
             });
-
+            
             transformedData = Array.from(pivotMap.values());
           }
         }
@@ -138,7 +138,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         // Add normalized field names and ensure we have name/id fields
         transformedData = transformedData.map((item: any, index: number) => {
           const normalizedItem = { id: index, ...item };
-
+          
           // Add lowercase versions of field names for consistent access
           Object.keys(item).forEach(key => {
             const lowerKey = key.toLowerCase();
@@ -146,10 +146,10 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
               normalizedItem[lowerKey] = item[key];
             }
           });
-
+          
           // Ensure we have a 'name' field for charts
           if (!normalizedItem.name && !normalizedItem.NAME) {
-            const nameFields = Object.keys(normalizedItem).filter(key =>
+            const nameFields = Object.keys(normalizedItem).filter(key => 
               typeof normalizedItem[key] === 'string' ||
               key.toLowerCase().includes('name') ||
               key.toLowerCase().includes('month') ||
@@ -159,7 +159,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
               normalizedItem.name = normalizedItem[nameFields[0]];
             }
           }
-
+          
           return normalizedItem;
         });
 
@@ -173,9 +173,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
       // Handle generic chart specifications
       if (chartSpec.type && chartSpec.data) {
-        const originalData = chartSpec.data.map((item: any, index: number) => ({
-          id: index,
-          ...item
+        const originalData = chartSpec.data.map((item: any, index: number) => ({ 
+          id: index, 
+          ...item 
         }));
         return {
           type: chartSpec.type,
@@ -187,9 +187,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
       // Handle direct data arrays
       if (Array.isArray(chartSpec)) {
-        const originalData = chartSpec.map((item: any, index: number) => ({
-          id: index,
-          ...item
+        const originalData = chartSpec.map((item: any, index: number) => ({ 
+          id: index, 
+          ...item 
         }));
         return {
           type: 'bar',
@@ -227,9 +227,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     }
 
     const dataKeys = Object.keys(data[0] || {});
-
+    
     // Auto-detect X-axis field (temporal/categorical) - generic approach
-    let xKey = dataKeys.find(key =>
+    let xKey = dataKeys.find(key => 
       key.toLowerCase().includes('month') ||
       key.toLowerCase().includes('date') ||
       key.toLowerCase().includes('timestamp') ||
@@ -250,8 +250,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       key.toLowerCase().includes('primary_ticker') ||
       (typeof data[0]?.[key] === 'string')
     );
-
-
+    
+    
     // Fallback to first string field or 'name'
     if (!xKey) {
       xKey = dataKeys.find(key => typeof data[0]?.[key] === 'string') || 'name';
@@ -274,10 +274,10 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       const hasNoMonth = !key.toLowerCase().includes('month');
       const hasNoYear = !key.toLowerCase().includes('year');
       const isNumeric = typeof data[0]?.[key] === 'number' || !isNaN(Number(data[0]?.[key]));
-
+      
       return isNotXKey && isNotName && isNotId && hasNoDate && hasNoTime && hasNoMonth && hasNoYear && isNumeric;
     });
-
+    
     // Filter out metadata and system fields (generic patterns)
     // BUT preserve actual data fields like AVG_SENTIMENT_SCORE, MONTHLY_SALES, etc.
     const excludePatterns = [
@@ -346,10 +346,10 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   const customTooltipFormatter = (value: any, name: any): any => {
     // Enhanced field name formatting
     let formattedName = name;
-
+    
     // Replace underscores with spaces
     formattedName = formattedName.replace(/_/g, ' ');
-
+    
     // Handle common patterns for better readability
     formattedName = formattedName
       .replace(/\bCOUNT\b/gi, 'Count')
@@ -359,10 +359,10 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       .replace(/\bSUM\b/gi, 'Sum')
       .replace(/\bMAX\b/gi, 'Maximum')
       .replace(/\bMIN\b/gi, 'Minimum');
-
+    
     // Title case for remaining words
     formattedName = formattedName.replace(/\b\w/g, (l: string) => l.toUpperCase());
-
+    
     if (typeof value === 'number') {
       return [value.toLocaleString(), formattedName];
     }
@@ -384,17 +384,17 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
               return `${month} ${year}`;
             }
             // For daily data
-            return date.toLocaleDateString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              year: 'numeric'
+            return date.toLocaleDateString('en-US', { 
+              month: 'short', 
+              day: 'numeric', 
+              year: 'numeric' 
             });
           }
         } catch (e) {
           // Fall through to default formatting
         }
       }
-
+      
       // Format category labels (e.g., "Person Industry Category")
       // Keep as-is if it's already in a readable format
       return label;
@@ -405,13 +405,13 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   // Generate legend items for display above chart
   const renderLegendItems = () => {
     const { yKeys } = chartConfig;
-
+    
     if (!yKeys || yKeys.length === 0) return null;
-
+    
     return (
-      <Box sx={{
-        display: 'flex',
-        gap: 2,
+      <Box sx={{ 
+        display: 'flex', 
+        gap: 2, 
         justifyContent: 'center',
         alignItems: 'center',
         flexWrap: 'wrap',
@@ -420,12 +420,12 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`
       }}>
         {yKeys.map((key, index) => (
-          <Box
+          <Box 
             key={key}
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1
+            sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: 1 
             }}
           >
             <Box
@@ -437,9 +437,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 flexShrink: 0
               }}
             />
-            <Typography
-              variant="body2"
-              sx={{
+            <Typography 
+              variant="body2" 
+              sx={{ 
                 fontWeight: 600,
                 fontSize: '0.875rem',
                 color: 'text.primary'
@@ -457,12 +457,12 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   const renderChart = () => {
     if (!data || data.length === 0) {
       return (
-        <Box sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
           height: height,
-          color: 'text.secondary'
+          color: 'text.secondary' 
         }}>
           <Typography variant="body1">No data available for visualization</Typography>
         </Box>
@@ -474,16 +474,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     switch (type) {
       case 'line':
         return (
-          <ResponsiveContainer width="100%" height={height}>
-            <LineChart data={data} margin={{ top: 20, right: 30, left: 50, bottom: 60 }}>
-              <CartesianGrid
-                strokeDasharray="3 3"
+            <ResponsiveContainer width="100%" height={height}>
+              <LineChart data={data} margin={{ top: 20, right: 30, left: 50, bottom: 60 }}>
+              <CartesianGrid 
+                strokeDasharray="3 3" 
                 stroke={alpha(theme.palette.divider, 0.3)}
                 horizontal={true}
                 vertical={false}
               />
-              <XAxis
-                dataKey={xKey}
+              <XAxis 
+                dataKey={xKey} 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
@@ -504,7 +504,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   return value;
                 }}
               />
-              <YAxis
+              <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={11}
                 tickFormatter={(value) => {
@@ -521,7 +521,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 domain={['dataMin * 0.95', 'dataMax * 1.1']}
                 width={70}
               />
-              <Tooltip
+              <Tooltip 
                 formatter={customTooltipFormatter}
                 labelFormatter={customLabelFormatter}
                 contentStyle={{
@@ -550,14 +550,14 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   dataKey={key}
                   stroke={CHART_COLORS[index % CHART_COLORS.length]}
                   strokeWidth={3}
-                  dot={{
-                    fill: CHART_COLORS[index % CHART_COLORS.length],
-                    strokeWidth: 2,
+                  dot={{ 
+                    fill: CHART_COLORS[index % CHART_COLORS.length], 
+                    strokeWidth: 2, 
                     r: 5
                   }}
-                  activeDot={{
-                    r: 8,
-                    stroke: CHART_COLORS[index % CHART_COLORS.length],
+                  activeDot={{ 
+                    r: 8, 
+                    stroke: CHART_COLORS[index % CHART_COLORS.length], 
                     strokeWidth: 3,
                     fill: '#ffffff'
                   }}
@@ -579,15 +579,15 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   </linearGradient>
                 ))}
               </defs>
-              <CartesianGrid
-                strokeDasharray="1 3"
-                stroke={alpha(theme.palette.divider, 0.2)}
+              <CartesianGrid 
+                strokeDasharray="1 3" 
+                stroke={alpha(theme.palette.divider, 0.2)} 
                 strokeWidth={1}
                 horizontal={true}
                 vertical={false}
               />
-              <XAxis
-                dataKey={xKey}
+              <XAxis 
+                dataKey={xKey} 
                 stroke={theme.palette.text.secondary}
                 fontSize={11}
                 fontWeight={500}
@@ -605,7 +605,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   return value;
                 }}
               />
-              <YAxis
+              <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={11}
                 fontWeight={500}
@@ -624,15 +624,15 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickLine={{ stroke: alpha(theme.palette.divider, 0.3), strokeWidth: 1 }}
                 width={70}
               />
-              <Tooltip
+              <Tooltip 
                 formatter={customTooltipFormatter}
                 labelFormatter={customLabelFormatter}
                 contentStyle={{
                   backgroundColor: alpha(theme.palette.background.paper, 0.95),
                   border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
                   borderRadius: '12px',
-                  boxShadow: theme.palette.mode === 'dark'
-                    ? '0 8px 32px rgba(0, 0, 0, 0.4)'
+                  boxShadow: theme.palette.mode === 'dark' 
+                    ? '0 8px 32px rgba(0, 0, 0, 0.4)' 
                     : '0 8px 32px rgba(0, 0, 0, 0.12)',
                   fontSize: '0.875rem',
                   backdropFilter: 'blur(8px)',
@@ -671,20 +671,20 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           <ResponsiveContainer width="100%" height={height}>
             <AreaChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
-              <XAxis
-                dataKey={xKey}
+              <XAxis 
+                dataKey={xKey} 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
                 height={60}
               />
-              <YAxis
+              <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
-              <Tooltip
+              <Tooltip 
                 formatter={formatTooltipValue}
                 labelFormatter={formatTooltipLabel}
                 contentStyle={{
@@ -745,7 +745,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip
+              <Tooltip 
                 formatter={(value) => [typeof value === 'number' ? value.toLocaleString() : value, 'Value']}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
@@ -773,20 +773,20 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           <ResponsiveContainer width="100%" height={height}>
             <ScatterChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
-              <XAxis
-                dataKey={xKey}
+              <XAxis 
+                dataKey={xKey} 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
                 height={60}
               />
-              <YAxis
+              <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
-              <Tooltip
+              <Tooltip 
                 formatter={formatTooltipValue}
                 labelFormatter={formatTooltipLabel}
                 contentStyle={{
@@ -822,20 +822,20 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           <ResponsiveContainer width="100%" height={height}>
             <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
-              <XAxis
-                dataKey={xKey}
+              <XAxis 
+                dataKey={xKey} 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
                 height={60}
               />
-              <YAxis
+              <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
-              <Tooltip
+              <Tooltip 
                 formatter={formatTooltipValue}
                 labelFormatter={formatTooltipLabel}
                 contentStyle={{
@@ -902,11 +902,11 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
             {originalData.map((row, index) => (
               <TableRow key={row.id || index} hover>
                 {columns.map((column) => (
-                  <TableCell
+                  <TableCell 
                     key={column}
                     sx={{ fontSize: '0.9rem' }}
                   >
-                    {typeof row[column] === 'number'
+                    {typeof row[column] === 'number' 
                       ? row[column].toLocaleString()
                       : row[column]?.toString() || '-'
                     }
