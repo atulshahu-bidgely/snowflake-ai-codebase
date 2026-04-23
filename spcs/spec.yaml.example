@@ -1,0 +1,31 @@
+spec:
+  containers:
+  - name: dash
+    image: /dash_spcs/apps/dash_repo/dash:latest
+    env:
+      # Backend server configuration
+      PORT: "3001"
+      SERVER_PORT: "3001"
+      NODE_ENV: production
+      
+      SNOWFLAKE_HOST: ""
+      SNOWFLAKE_PAT: ""
+      SNOWFLAKE_DATABASE: ""
+      SNOWFLAKE_SCHEMA: ""
+      
+      # CORS configuration for SPCS
+      ALLOWED_ORIGINS: "*"
+    
+    # Resource limits
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: "0.5"
+      limits:
+        memory: 1Gi
+        cpu: "1"
+
+  endpoints:
+  - name: dash-endpoint
+    port: 8080
+    public: true

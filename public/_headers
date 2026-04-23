@@ -1,0 +1,19 @@
+# Security Headers for Production
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  X-XSS-Protection: 1; mode=block
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# Cache Control for Static Assets
+/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Cache Control for Service Worker
+/service-worker.js
+  Cache-Control: no-cache, no-store, must-revalidate
+
+# Cache Control for HTML
+/*.html
+  Cache-Control: no-cache, no-store, must-revalidate
