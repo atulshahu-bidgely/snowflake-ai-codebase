@@ -315,7 +315,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   }, [data]);
 
   // Enhanced tooltip formatter to match the reference image
-  const formatTooltipValue = (value: any, name: string) => {
+  const formatTooltipValue = (value: any, name: any): any => {
     if (typeof value === 'number') {
       return [value.toLocaleString(), name.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())];
     }
@@ -323,7 +323,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   };
 
   // Enhanced label formatter for tooltips
-  const formatTooltipLabel = (label: string) => {
+  const formatTooltipLabel = (label: any): any => {
     if (label && typeof label === 'string') {
       // Convert date strings to readable format like "Month (2025) Jul"
       if (label.includes('-') && label.length >= 7) {
@@ -343,7 +343,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   };
 
   // Generic tooltip formatter for any data type
-  const customTooltipFormatter = (value: any, name: string) => {
+  const customTooltipFormatter = (value: any, name: any): any => {
     // Enhanced field name formatting
     let formattedName = name;
     
@@ -370,7 +370,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   };
 
   // Generic label formatter for tooltips - handles dates, strings, etc.
-  const customLabelFormatter = (label: string) => {
+  const customLabelFormatter = (label: any): any => {
     if (label && typeof label === 'string') {
       // Try to parse as date
       if (label.includes('-') && label.length >= 7) {
