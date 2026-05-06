@@ -217,14 +217,11 @@ const SimpleChatInterface: React.FC = () => {
         (message.sqlQueries && message.sqlQueries.length > 0)
       );
       const willShowText = message.text && message.text.trim().length > 0;
-      const willShowStatus = message.status === 'thinking' && message.isStreaming && (
-        (message.thinkingTexts && message.thinkingTexts.length > 0) ||
-        (message.sqlQueries && message.sqlQueries.length > 0) ||
-        (message.text && message.text.trim().length > 0)
-      );
+      // Show immediately while streaming, even before any content arrives
+      const willShowStreaming = message.sender === 'assistant' && message.isStreaming === true;
       const willShowError = message.status === 'error' && message.error && message.error.trim().length > 0;
-      
-      return willShowThinking || willShowText || willShowStatus || willShowError;
+
+      return willShowStreaming || willShowThinking || willShowText || willShowError;
     });
   }, [messages]);
 

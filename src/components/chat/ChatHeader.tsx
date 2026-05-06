@@ -24,21 +24,21 @@ export const ChatHeader: React.FC = () => {
     >
       <Box sx={{ position: 'relative' }}>
         <Container maxWidth="lg">
-          <Box sx={{ py: 2, position: 'relative' }}>
+          <Box sx={{ py: 1.25, position: 'relative' }}>
             {/* Title */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1, pr: 7 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, pr: 7 }}>
               <Box
                 component="img"
                 src={HEADER_TEXT.LOGO_PATH}
                 alt={HEADER_TEXT.LOGO_ALT}
                 sx={{
-                  height: 80,
+                  height: 48,
                   width: 'auto',
                   objectFit: 'contain',
                   imageRendering: 'crisp-edges',
-                  filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1))',
+                  filter: 'drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1))',
                   '@media (max-width: 600px)': {
-                    height: 64
+                    height: 40
                   }
                 }}
                 onError={(e) => {
@@ -46,38 +46,27 @@ export const ChatHeader: React.FC = () => {
                   e.currentTarget.style.display = 'none';
                 }}
               />
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                <Typography 
-                  variant="h2" 
-                  component="h1" 
-                  sx={{ 
-                    color: 'text.primary', 
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                <Typography
+                  variant="h2"
+                  component="h1"
+                  sx={{
+                    color: 'text.primary',
                     fontWeight: 600,
-                    fontSize: { xs: '1.8rem', '@media (min-width: 2000px)': { fontSize: '2rem' } }
+                    fontSize: { xs: '1.4rem', sm: '1.75rem' }
                   }}
                 >
                   {HEADER_TEXT.MAIN_TITLE}
                 </Typography>
-                
-                {/* Tagline and Subtitle - Responsive Sizes */}
-                <Typography 
-                  variant="body2" 
-                  color="text.secondary" 
-                  sx={{ 
-                    fontSize: { xs: '0.8rem', sm: '0.95rem', md: '1rem', '@media (min-width: 2000px)': { fontSize: '1.05rem' } },
+
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{
+                    fontSize: { xs: '0.75rem', sm: '0.875rem' },
                     fontWeight: 400,
-                    opacity: 0.85
-                  }}
-                >
-                </Typography>
-                
-                <Typography 
-                  variant="body2" 
-                  color="text.secondary" 
-                  sx={{ 
-                    fontSize: { xs: '0.8rem', sm: '0.95rem', md: '1rem', '@media (min-width: 2000px)': { fontSize: '1.05rem' } },
-                    fontWeight: 400,
-                    opacity: 0.85
+                    opacity: 0.8,
+                    lineHeight: 1.4,
                   }}
                 >
                   {HEADER_TEXT.SUBTITLE_PREFIX}{' '}

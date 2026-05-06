@@ -12,29 +12,29 @@ import {
 } from '@mui/material';
 import {
   Close as CloseIcon,
-  History as HistoryIcon,
+  AddComment as NewChatIcon,
   Send as SendIcon,
   AutoAwesome as SparkleIcon,
-  AddComment as NewChatIcon,
-  ChevronRight as ArrowIcon,
   Search as SearchIcon,
   BarChart as ChartIcon,
   TrackChanges as TargetIcon,
+  ChevronRight as ArrowIcon,
   EditOutlined as EditIcon,
+  Stop as StopIcon,
 } from '@mui/icons-material';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useAccordionState } from '../hooks/useAccordionState';
 import { ChatMessage } from './chat/ChatMessage';
 
-const GRADIENT =
-  'linear-gradient(19.5deg, #0f4184 0.2%, #1e62c1 29.9%, #94207b 51.3%, #e4194b 77.1%, #e4194b 102.8%, #f1774a 128.6%)';
+const FONT = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const GRADIENT = 'linear-gradient(19.5deg, #0f4184 0.2%, #1e62c1 29.9%, #94207b 51.3%, #e4194b 77.1%, #e4194b 102.8%, #f1774a 128.6%)';
 const BLUE = '#0c6ae9';
 const RED = '#e4194b';
 
 const GOAL_OPTIONS = [
   {
-    icon: <SearchIcon sx={{ fontSize: 22, color: BLUE }} />,
+    icon: <SearchIcon sx={{ fontSize: 20, color: BLUE }} />,
     title: 'I want to get some data',
     description: 'Pull metrics, consumption data, or account lists',
     questions: [
@@ -46,7 +46,7 @@ const GOAL_OPTIONS = [
     ],
   },
   {
-    icon: <ChartIcon sx={{ fontSize: 22, color: BLUE }} />,
+    icon: <ChartIcon sx={{ fontSize: 20, color: BLUE }} />,
     title: 'I want to analyse consumption patterns',
     description: 'Explore trends, peak usage, and segment behaviour',
     questions: [
@@ -58,12 +58,12 @@ const GOAL_OPTIONS = [
     ],
   },
   {
-    icon: <TargetIcon sx={{ fontSize: 22, color: BLUE }} />,
-    title: 'I want to target candidates for a specific program/rate',
+    icon: <TargetIcon sx={{ fontSize: 20, color: BLUE }} />,
+    title: 'I want to target candidates for a program',
     description: 'Find eligible accounts for programs or rate plans',
     questions: [
       'I want to plan a weatherisation program and want to target users whose cooling and heating are inefficient',
-      'I have a heatpump rebate and need to find the 3000 customers who own their homes, have SF homes, and have the least efficient heating. Can you generate a list of customers and show their monthly average heating consumption?',
+      'I have a heatpump rebate and need to find the 3000 customers who own their homes, have SF homes, and have the least efficient heating.',
       'Give the top 5 grid assets, whose utilization is very high due to EV charging in peak periods',
     ],
   },
@@ -94,7 +94,6 @@ export const EnergyAssistantPopup: React.FC = () => {
 
   const { config: agentConfig, loading: configLoading, refreshAgents } = useAgentConfig();
 
-  // Agent list sorted alphabetically
   const agentList = useMemo(() => {
     if (!agentConfig) return [];
     return Object.entries(agentConfig.agents)
@@ -104,7 +103,6 @@ export const EnergyAssistantPopup: React.FC = () => {
 
   const [selectedAgent, setSelectedAgent] = useState<string>('');
 
-  // Set default agent once loaded
   useEffect(() => {
     if (agentList.length > 0 && !selectedAgent) {
       setSelectedAgent(agentList[0].id);
@@ -118,14 +116,12 @@ export const EnergyAssistantPopup: React.FC = () => {
   const chartsAccordion = useAccordionState();
   const annotationsAccordion = useAccordionState();
 
-  // Auto-scroll
   useEffect(() => {
     if (open && messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, open]);
 
-  // Collapse thinking/sql on completion
   useEffect(() => {
     messages.forEach(msg => {
       if (msg.sender === 'assistant' && msg.status === 'sent' && !msg.isStreaming) {
@@ -141,6 +137,8 @@ export const EnergyAssistantPopup: React.FC = () => {
         ((msg.thinkingTexts?.some(t => t.trim().length > 0)) ||
           (msg.sqlQueries && msg.sqlQueries.length > 0));
       return (
+        // Show immediately when the assistant is actively processing (even before any content)
+        (msg.sender === 'assistant' && msg.isStreaming) ||
         hasThinking ||
         (msg.text && msg.text.trim()) ||
         (msg.status === 'error' && msg.error?.trim())
@@ -166,22 +164,12 @@ export const EnergyAssistantPopup: React.FC = () => {
 
   const handleGoalClick = useCallback((index: number) => {
     setSelectedGoal(index);
+    setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
 
   const handleQuestionClick = useCallback((text: string) => {
     sendMessage(buildPrompt(text, selectedGoal === ANALYSIS_GOAL_INDEX), text);
   }, [sendMessage, selectedGoal]);
-
-  const handleAgentSwitch = useCallback((agentId: string) => {
-    if (agentId === selectedAgent) return;
-    setSelectedAgent(agentId);
-    clearMessages();
-    setInputText('');
-    setSelectedGoal(null);
-    thinkingAccordion.reset();
-    chartsAccordion.reset();
-    annotationsAccordion.reset();
-  }, [selectedAgent, clearMessages, thinkingAccordion, chartsAccordion, annotationsAccordion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNewChat = useCallback(() => {
     clearMessages();
@@ -206,7 +194,7 @@ export const EnergyAssistantPopup: React.FC = () => {
       {open && (
         <Box
           onClick={() => setOpen(false)}
-          sx={{ position: 'fixed', inset: 0, bgcolor: 'rgba(0,0,0,0.35)', zIndex: 1200 }}
+          sx={{ position: 'fixed', inset: 0, bgcolor: 'rgba(0,0,0,0.4)', zIndex: 1200, backdropFilter: 'blur(2px)' }}
         />
       )}
 
@@ -218,7 +206,7 @@ export const EnergyAssistantPopup: React.FC = () => {
           left: '50%',
           transform: open
             ? 'translate(-50%, -50%)'
-            : 'translate(-50%, -50%) scale(0.96)',
+            : 'translate(-50%, -50%) scale(0.97)',
           opacity: open ? 1 : 0,
           pointerEvents: open ? 'auto' : 'none',
           transition: 'opacity 0.2s ease, transform 0.2s ease',
@@ -228,10 +216,10 @@ export const EnergyAssistantPopup: React.FC = () => {
           zIndex: 1300,
           display: 'flex',
           flexDirection: 'column',
-          bgcolor: '#fefefd',
-          borderRadius: '12px',
-          border: '1px solid rgba(0,0,0,0.06)',
-          boxShadow: '0px 24px 80px rgba(0,0,0,0.22)',
+          bgcolor: '#ffffff',
+          borderRadius: '14px',
+          border: '1px solid rgba(0,0,0,0.08)',
+          boxShadow: '0px 32px 96px rgba(0,0,0,0.20), 0px 4px 16px rgba(0,0,0,0.08)',
           overflow: 'hidden',
         }}
       >
@@ -242,46 +230,68 @@ export const EnergyAssistantPopup: React.FC = () => {
             alignItems: 'center',
             justifyContent: 'space-between',
             px: 3,
-            py: '14px',
-            borderBottom: '1px solid #f0f0f0',
+            py: '12px',
+            borderBottom: '1px solid #efefef',
             bgcolor: 'white',
             flexShrink: 0,
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <SparkleIcon sx={{ fontSize: 18, color: BLUE }} />
-            <Typography sx={{ fontSize: 16, color: '#333', fontFamily: 'Roboto, sans-serif' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
+            <Box
+              sx={{
+                width: 28,
+                height: 28,
+                borderRadius: '7px',
+                background: GRADIENT,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <SparkleIcon sx={{ fontSize: 15, color: 'white' }} />
+            </Box>
+            <Typography sx={{ fontSize: 15, fontWeight: 600, color: '#1a1d23', fontFamily: FONT, letterSpacing: '-0.01em' }}>
               Energy Assistant
             </Typography>
-            <Box sx={{ bgcolor: '#f6f6f6', borderRadius: '2px', px: '4px', py: '1px' }}>
-              <Typography sx={{ fontSize: 11, color: '#616f89', fontFamily: 'Roboto, sans-serif' }}>
+            <Box sx={{ bgcolor: '#f0f0f0', borderRadius: '4px', px: '6px', py: '2px' }}>
+              <Typography sx={{ fontSize: 10, fontWeight: 500, color: '#888', fontFamily: FONT, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
                 Beta
               </Typography>
             </Box>
           </Box>
 
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {/* New Chat button */}
             <Box
+              component="button"
               onClick={handleNewChat}
-              sx={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', '&:hover': { opacity: 0.7 } }}
+              sx={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                cursor: 'pointer',
+                border: '1px solid #e8eaed',
+                borderRadius: '7px',
+                bgcolor: 'transparent',
+                px: '10px',
+                py: '5px',
+                transition: 'all 0.15s',
+                '&:hover': { bgcolor: '#f4f6f9', borderColor: '#d0d4db' },
+              }}
             >
-              <HistoryIcon sx={{ fontSize: 18, color: '#555' }} />
-              <Typography sx={{ fontSize: 13, color: '#555', fontFamily: 'Roboto, sans-serif', whiteSpace: 'nowrap' }}>
-                Chat History
-              </Typography>
-            </Box>
-            <Box
-              onClick={handleNewChat}
-              sx={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', '&:hover': { opacity: 0.7 } }}
-            >
-              <NewChatIcon sx={{ fontSize: 18, color: '#555' }} />
-              <Typography sx={{ fontSize: 13, color: '#555', fontFamily: 'Roboto, sans-serif', whiteSpace: 'nowrap' }}>
+              <NewChatIcon sx={{ fontSize: 15, color: '#555' }} />
+              <Typography sx={{ fontSize: 13, color: '#444', fontFamily: FONT, fontWeight: 500, whiteSpace: 'nowrap' }}>
                 New Chat
               </Typography>
             </Box>
-            <Divider orientation="vertical" flexItem sx={{ height: 16, alignSelf: 'center' }} />
-            <IconButton size="small" onClick={() => setOpen(false)} sx={{ color: '#555', p: 0.25 }}>
-              <CloseIcon sx={{ fontSize: 20 }} />
+
+            <Divider orientation="vertical" flexItem sx={{ height: 18, alignSelf: 'center', mx: 0.5 }} />
+
+            <IconButton
+              size="small"
+              onClick={() => setOpen(false)}
+              aria-label="Close assistant"
+              sx={{ color: '#666', p: '5px', borderRadius: '7px', '&:hover': { bgcolor: '#f4f6f9', color: '#333' } }}
+            >
+              <CloseIcon sx={{ fontSize: 18 }} />
             </IconButton>
           </Box>
         </Box>
@@ -292,26 +302,40 @@ export const EnergyAssistantPopup: React.FC = () => {
             sx={{
               flexShrink: 0,
               display: 'flex', alignItems: 'center', gap: 1.5,
-              px: { xs: 3, sm: '32px' }, py: '9px',
-              bgcolor: `${BLUE}07`,
-              borderBottom: `1px solid ${BLUE}22`,
+              px: { xs: 3, sm: '32px' }, py: '8px',
+              bgcolor: `${BLUE}06`,
+              borderBottom: `1px solid ${BLUE}18`,
             }}
           >
-            <Box sx={{ width: 28, height: 28, borderRadius: '6px', bgcolor: `${BLUE}16`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              {React.cloneElement(GOAL_OPTIONS[selectedGoal].icon as React.ReactElement, { sx: { fontSize: 15, color: BLUE } })}
+            <Box sx={{
+              width: 24, height: 24, borderRadius: '5px',
+              bgcolor: `${BLUE}14`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              {React.cloneElement(GOAL_OPTIONS[selectedGoal].icon as React.ReactElement, { sx: { fontSize: 13, color: BLUE } })}
             </Box>
-            <Typography sx={{ fontSize: 12, color: '#888', fontFamily: 'Roboto, sans-serif', whiteSpace: 'nowrap' }}>
-              Goal:
+            <Typography sx={{ fontSize: 11, color: '#999', fontFamily: FONT, whiteSpace: 'nowrap', fontWeight: 500 }}>
+              Goal
             </Typography>
-            <Typography sx={{ flex: 1, fontSize: 13, fontWeight: 600, color: BLUE, fontFamily: 'Roboto, sans-serif', minWidth: 0 }} noWrap>
+            <Typography sx={{ flex: 1, fontSize: 13, fontWeight: 600, color: BLUE, fontFamily: FONT, minWidth: 0, letterSpacing: '-0.01em' }} noWrap>
               {GOAL_OPTIONS[selectedGoal].title}
             </Typography>
             <Box
+              component="button"
               onClick={handleNewChat}
-              sx={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', flexShrink: 0, '&:hover': { opacity: 0.7 } }}
+              sx={{
+                display: 'flex', alignItems: 'center', gap: '4px',
+                cursor: 'pointer',
+                border: 'none', bgcolor: 'transparent',
+                flexShrink: 0,
+                p: '3px 6px',
+                borderRadius: '4px',
+                transition: 'all 0.15s',
+                '&:hover': { bgcolor: `${BLUE}10` },
+              }}
             >
-              <EditIcon sx={{ fontSize: 13, color: '#888' }} />
-              <Typography sx={{ fontSize: 12, color: '#888', fontFamily: 'Roboto, sans-serif' }}>Change</Typography>
+              <EditIcon sx={{ fontSize: 12, color: '#999' }} />
+              <Typography sx={{ fontSize: 12, color: '#999', fontFamily: FONT }}>Change</Typography>
             </Box>
           </Box>
         )}
@@ -319,98 +343,142 @@ export const EnergyAssistantPopup: React.FC = () => {
         {/* ── Body ─────────────────────────────────────────── */}
         <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
           {configLoading ? (
-            <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <CircularProgress size={32} sx={{ color: BLUE }} />
+            <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, flexDirection: 'column' }}>
+              <CircularProgress size={28} sx={{ color: BLUE }} />
+              <Typography sx={{ fontSize: 13, color: '#aaa', fontFamily: FONT }}>Loading agents…</Typography>
             </Box>
 
           ) : visibleMessages.length === 0 ? (
-            // ── Empty / onboarding state ────────────────────
+            // ── Empty / onboarding state ──────────────────────
             <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
 
               {selectedGoal === null ? (
-                // ── Goal picker (full, scrollable) ────────────
-                <Box sx={{ flex: 1, overflowY: 'auto', px: { xs: 3, sm: '80px' }, pt: '48px', pb: 3, display: 'flex', flexDirection: 'column', gap: '32px' }}>
-                  <Typography
-                    sx={{
-                      fontSize: { xs: 26, sm: 34 },
-                      fontWeight: 700,
-                      textAlign: 'center',
-                      background: GRADIENT,
-                      backgroundClip: 'text',
-                      WebkitBackgroundClip: 'text',
-                      WebkitTextFillColor: 'transparent',
-                      fontFamily: 'Roboto, sans-serif',
-                      lineHeight: 1.25,
-                    }}
-                  >
-                    What do you want to do today?
-                  </Typography>
+                // ── Goal picker ───────────────────────────────
+                <Box sx={{ flex: 1, overflowY: 'auto', px: { xs: 3, sm: '80px' }, pt: '44px', pb: 3, display: 'flex', flexDirection: 'column', gap: '28px' }}>
+                  <Box sx={{ textAlign: 'center' }}>
+                    <Typography
+                      sx={{
+                        fontSize: { xs: 24, sm: 30 },
+                        fontWeight: 700,
+                        background: GRADIENT,
+                        backgroundClip: 'text',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        fontFamily: FONT,
+                        lineHeight: 1.2,
+                        letterSpacing: '-0.03em',
+                        mb: 0.5,
+                      }}
+                    >
+                      What do you want to do today?
+                    </Typography>
+                    <Typography sx={{ fontSize: 13, color: '#aaa', fontFamily: FONT }}>
+                      Choose a goal to get started with suggested questions
+                    </Typography>
+                  </Box>
 
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {GOAL_OPTIONS.map((opt, i) => (
                       <Box
                         key={i}
+                        component="button"
                         onClick={() => handleGoalClick(i)}
                         sx={{
                           display: 'flex', alignItems: 'center', gap: 2,
-                          p: '16px 20px',
-                          bgcolor: 'white', border: '1px solid #eaedf6',
-                          borderRadius: '10px', cursor: 'pointer',
-                          transition: 'all 0.15s',
+                          p: '16px 18px',
+                          bgcolor: 'white',
+                          border: '1.5px solid #e8eaed',
+                          borderLeft: '3px solid transparent',
+                          borderRadius: '10px',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          width: '100%',
+                          transition: 'all 0.16s ease',
                           '&:hover': {
-                            borderColor: `${BLUE}60`,
-                            boxShadow: `0 2px 12px ${BLUE}18`,
-                            transform: 'translateY(-1px)',
+                            borderColor: `${BLUE}50`,
+                            borderLeft: `3px solid ${BLUE}`,
+                            bgcolor: `${BLUE}04`,
+                            boxShadow: `0 2px 16px ${BLUE}14`,
+                            '& .goal-arrow': { opacity: 1, transform: 'translateX(2px)' },
+                            '& .goal-icon-box': { bgcolor: `${BLUE}20` },
                           },
                         }}
                       >
-                        <Box sx={{ width: 40, height: 40, borderRadius: '8px', bgcolor: `${BLUE}12`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <Box
+                          className="goal-icon-box"
+                          sx={{
+                            width: 40, height: 40,
+                            borderRadius: '9px',
+                            bgcolor: `${BLUE}10`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            flexShrink: 0,
+                            transition: 'background-color 0.16s ease',
+                          }}
+                        >
                           {opt.icon}
                         </Box>
                         <Box sx={{ flex: 1, minWidth: 0 }}>
-                          <Typography sx={{ fontSize: 15, fontWeight: 600, color: '#1e232e', fontFamily: 'Roboto, sans-serif' }}>
+                          <Typography sx={{ fontSize: 14, fontWeight: 600, color: '#1a1d23', fontFamily: FONT, letterSpacing: '-0.01em', mb: '2px' }}>
                             {opt.title}
                           </Typography>
-                          <Typography sx={{ fontSize: 13, color: '#727888', fontFamily: 'Roboto, sans-serif', mt: '2px' }}>
+                          <Typography sx={{ fontSize: 12.5, color: '#7a8096', fontFamily: FONT, lineHeight: 1.4 }}>
                             {opt.description}
                           </Typography>
                         </Box>
-                        <ArrowIcon sx={{ fontSize: 20, color: '#c0c6d4', flexShrink: 0 }} />
+                        <ArrowIcon
+                          className="goal-arrow"
+                          sx={{ fontSize: 18, color: '#c8cdd8', flexShrink: 0, opacity: 0.6, transition: 'all 0.16s ease' }}
+                        />
                       </Box>
                     ))}
                   </Box>
                 </Box>
 
               ) : (
-                // ── Goal selected: question list ─
-                <Box sx={{ flex: 1, overflowY: 'auto', px: { xs: 3, sm: '48px' }, py: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <Typography sx={{ fontSize: 12, color: '#aaa', fontFamily: 'Roboto, sans-serif', mb: 1 }}>
+                // ── Suggested questions ────────────────────────
+                <Box sx={{ flex: 1, overflowY: 'auto', px: { xs: 3, sm: '48px' }, py: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <Typography sx={{ fontSize: 11, fontWeight: 600, color: '#b0b8c8', fontFamily: FONT, mb: 1, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                     Suggested questions
                   </Typography>
 
                   {GOAL_OPTIONS[selectedGoal].questions.map((q, i) => (
                     <Box
                       key={i}
+                      component="button"
                       onClick={() => handleQuestionClick(q)}
                       sx={{
                         display: 'flex', alignItems: 'center', gap: '12px',
-                        px: '16px', py: '13px',
-                        bgcolor: 'white', border: '1px solid #eaedf6',
-                        borderRadius: '8px', cursor: 'pointer',
-                        transition: 'all 0.15s',
-                        '&:hover': { bgcolor: '#f2f8fe', borderColor: `${BLUE}40`, transform: 'translateX(3px)' },
+                        px: '16px', py: '12px',
+                        bgcolor: 'white',
+                        border: '1.5px solid #e8eaed',
+                        borderLeft: '3px solid transparent',
+                        borderRadius: '9px',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        width: '100%',
+                        transition: 'all 0.15s ease',
+                        '&:hover': {
+                          bgcolor: `${BLUE}05`,
+                          borderColor: `${BLUE}40`,
+                          borderLeft: `3px solid ${BLUE}`,
+                          '& .q-arrow': { opacity: 1, transform: 'translateX(3px)' },
+                        },
                       }}
                     >
-                      <SparkleIcon sx={{ fontSize: 14, color: BLUE, flexShrink: 0 }} />
-                      <Typography sx={{ flex: 1, fontSize: 14, color: '#1e232e', fontFamily: 'Roboto, sans-serif', lineHeight: 1.4 }}>
+                      <SparkleIcon sx={{ fontSize: 13, color: BLUE, flexShrink: 0, opacity: 0.75 }} />
+                      <Typography sx={{ flex: 1, fontSize: 13.5, color: '#2a2e3a', fontFamily: FONT, lineHeight: 1.45, fontWeight: 400 }}>
                         {q}
                       </Typography>
+                      <ArrowIcon
+                        className="q-arrow"
+                        sx={{ fontSize: 16, color: '#c0c6d4', flexShrink: 0, opacity: 0, transition: 'all 0.15s ease' }}
+                      />
                     </Box>
                   ))}
                 </Box>
               )}
 
-              {/* Input — always at bottom */}
+              {/* Input — always at bottom of empty state */}
               <Box sx={{ px: { xs: 3, sm: '48px' }, pb: 3, pt: 1.5, flexShrink: 0, borderTop: '1px solid #f0f0f0', bgcolor: 'white' }}>
                 <InputBox
                   inputRef={inputRef}
@@ -419,20 +487,20 @@ export const EnergyAssistantPopup: React.FC = () => {
                   onKeyDown={handleKeyDown}
                   onSend={handleSubmit}
                   isLoading={isLoading}
-                  height={selectedGoal === null ? 72 : 56}
-                  placeholder={selectedGoal !== null ? GOAL_PLACEHOLDERS[selectedGoal] : 'Ask a question…'}
+                  height={selectedGoal === null ? 68 : 52}
+                  placeholder={selectedGoal !== null ? GOAL_PLACEHOLDERS[selectedGoal] : 'Ask a question about your energy data…'}
                 />
-                <Typography sx={{ fontSize: 11, color: '#333', opacity: 0.25, textAlign: 'center', mt: 1.5, fontFamily: 'Roboto, sans-serif' }}>
-                  Energy Assistant is an AI and may occasionally make mistakes.
+                <Typography sx={{ fontSize: 11, color: '#333', opacity: 0.22, textAlign: 'center', mt: 1.25, fontFamily: FONT }}>
+                  AI may occasionally make mistakes. Verify important numbers independently.
                 </Typography>
               </Box>
             </Box>
 
           ) : (
-            // ── Chat state ─────────────────────────────────────
+            // ── Chat state ──────────────────────────────────────
             <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
               {/* Scrollable messages */}
-              <Box sx={{ flex: 1, overflowY: 'auto', px: 3, py: 2.5, bgcolor: '#f8f9fc' }}>
+              <Box sx={{ flex: 1, overflowY: 'auto', px: 3, py: 2.5, bgcolor: '#f7f8fb' }}>
                 <Stack spacing={2.5}>
                   {visibleMessages.map(msg => (
                     <ChatMessage
@@ -449,10 +517,10 @@ export const EnergyAssistantPopup: React.FC = () => {
                   ))}
                 </Stack>
 
-                {/* Follow-up question chips — shown after last assistant response completes */}
+                {/* Follow-up chips */}
                 {lastMessageComplete && selectedGoal !== null && (
-                  <Box sx={{ mt: 2.5, mb: 1 }}>
-                    <Typography sx={{ fontSize: 11, color: '#aaa', fontFamily: 'Roboto, sans-serif', mb: 1.5, pl: '2px' }}>
+                  <Box sx={{ mt: 3, mb: 1 }}>
+                    <Typography sx={{ fontSize: 11, fontWeight: 600, color: '#b0b8c8', fontFamily: FONT, mb: 1.5, pl: '2px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                       Follow-up questions
                     </Typography>
                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -463,15 +531,23 @@ export const EnergyAssistantPopup: React.FC = () => {
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '6px',
                             px: '12px', py: '7px',
-                            bgcolor: 'white', border: `1px solid ${BLUE}30`,
-                            borderRadius: '20px', cursor: 'pointer',
-                            fontSize: 13, color: '#1e232e',
-                            fontFamily: 'Roboto, sans-serif',
+                            bgcolor: 'white',
+                            border: `1.5px solid ${BLUE}28`,
+                            borderRadius: '20px',
+                            cursor: 'pointer',
+                            fontSize: 12.5,
+                            color: '#2a2e3a',
+                            fontFamily: FONT,
+                            fontWeight: 400,
                             transition: 'all 0.15s',
-                            '&:hover': { bgcolor: `${BLUE}08`, borderColor: `${BLUE}70` },
+                            '&:hover': {
+                              bgcolor: `${BLUE}08`,
+                              borderColor: `${BLUE}60`,
+                              color: BLUE,
+                            },
                           }}
                         >
-                          <SparkleIcon sx={{ fontSize: 12, color: BLUE }} />
+                          <SparkleIcon sx={{ fontSize: 11, color: BLUE }} />
                           {q}
                         </Box>
                       ))}
@@ -483,14 +559,14 @@ export const EnergyAssistantPopup: React.FC = () => {
               </Box>
 
               {/* Sticky input */}
-              <Box sx={{ px: 3, pt: 1.5, pb: 2, borderTop: '1px solid #eee', bgcolor: 'white', flexShrink: 0 }}>
+              <Box sx={{ px: 3, py: '14px', borderTop: '1px solid #efefef', bgcolor: 'white', flexShrink: 0 }}>
                 <InputBox
                   value={inputText}
                   onChange={setInputText}
                   onKeyDown={handleKeyDown}
                   onSend={handleSubmit}
                   isLoading={isLoading}
-                  height={56}
+                  height={52}
                 />
               </Box>
             </Box>
@@ -502,6 +578,7 @@ export const EnergyAssistantPopup: React.FC = () => {
       <Zoom in={!open}>
         <Fab
           onClick={() => setOpen(true)}
+          aria-label="Open Energy Assistant"
           sx={{
             position: 'fixed',
             bottom: 32,
@@ -511,8 +588,8 @@ export const EnergyAssistantPopup: React.FC = () => {
             zIndex: 1200,
             width: 56,
             height: 56,
-            boxShadow: '0px 4px 20px rgba(12,106,233,0.4)',
-            '&:hover': { opacity: 0.9, background: GRADIENT },
+            boxShadow: '0px 6px 24px rgba(12,106,233,0.45)',
+            '&:hover': { opacity: 0.92, background: GRADIENT, boxShadow: '0px 8px 32px rgba(12,106,233,0.55)' },
           }}
         >
           <SparkleIcon sx={{ fontSize: 24 }} />
@@ -522,7 +599,7 @@ export const EnergyAssistantPopup: React.FC = () => {
   );
 };
 
-// ── Shared input box ──────────────────────────────────────
+// ── Input box ─────────────────────────────────────────────────
 
 interface InputBoxProps {
   value: string;
@@ -535,19 +612,28 @@ interface InputBoxProps {
   inputRef?: React.Ref<HTMLInputElement>;
 }
 
-const InputBox: React.FC<InputBoxProps> = ({ value, onChange, onKeyDown, onSend, isLoading, height, placeholder = 'Ask a question…', inputRef }) => (
+const InputBox: React.FC<InputBoxProps> = ({
+  value, onChange, onKeyDown, onSend, isLoading, height,
+  placeholder = 'Ask a question…',
+  inputRef,
+}) => (
   <Box
     sx={{
       width: '100%',
       height,
-      border: `1.5px solid ${isLoading ? RED + '60' : BLUE + '50'}`,
+      border: `1.5px solid ${isLoading ? RED + '50' : '#d8dbe2'}`,
       borderRadius: '10px',
-      boxShadow: '0px 1px 8px rgba(40,41,61,0.06)',
+      boxShadow: isLoading
+        ? `0 0 0 3px ${RED}14`
+        : '0px 1px 6px rgba(40,41,61,0.05)',
       bgcolor: 'white',
       position: 'relative',
       overflow: 'hidden',
-      transition: 'border-color 0.2s',
-      '&:focus-within': { borderColor: BLUE },
+      transition: 'border-color 0.2s, box-shadow 0.2s',
+      '&:focus-within': {
+        borderColor: isLoading ? RED + '70' : BLUE,
+        boxShadow: `0 0 0 3px ${isLoading ? RED : BLUE}18`,
+      },
     }}
   >
     <TextField
@@ -557,6 +643,7 @@ const InputBox: React.FC<InputBoxProps> = ({ value, onChange, onKeyDown, onSend,
       value={value}
       onChange={e => onChange(e.target.value)}
       onKeyDown={onKeyDown}
+      disabled={isLoading}
       variant="standard"
       inputRef={inputRef}
       sx={{
@@ -567,37 +654,53 @@ const InputBox: React.FC<InputBoxProps> = ({ value, onChange, onKeyDown, onSend,
           alignItems: 'flex-start',
           px: '14px',
           pt: height >= 60 ? '12px' : '0px',
-          fontFamily: 'Roboto, sans-serif',
-          fontSize: 15,
-          color: '#333',
+          fontFamily: FONT,
+          fontSize: 14,
+          color: '#1a1d23',
+        },
+        '& .MuiInputBase-input::placeholder': {
+          color: '#b0b8c8',
+          opacity: 1,
         },
         '& .MuiInput-underline:before': { display: 'none' },
         '& .MuiInput-underline:after': { display: 'none' },
         '& textarea': { resize: 'none' },
       }}
     />
+
+    {/* Send / Stop button */}
     <Box
+      component="button"
       onClick={onSend}
+      aria-label={isLoading ? 'Stop generating' : 'Send message'}
+      disabled={!isLoading && !value.trim()}
       sx={{
         position: 'absolute',
         bottom: height >= 60 ? 8 : '50%',
         transform: height >= 60 ? 'none' : 'translateY(50%)',
         right: 8,
-        width: 36,
-        height: 36,
-        bgcolor: isLoading ? '#fff0f0' : `${BLUE}18`,
+        width: 34,
+        height: 34,
+        bgcolor: isLoading ? '#fff2f2' : !value.trim() ? '#f4f6f9' : BLUE,
         borderRadius: '8px',
+        border: 'none',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        cursor: 'pointer',
-        transition: 'background 0.15s',
-        '&:hover': { bgcolor: isLoading ? '#ffe0e0' : `${BLUE}28` },
+        cursor: !isLoading && !value.trim() ? 'default' : 'pointer',
+        transition: 'all 0.15s',
+        '&:hover:not(:disabled)': {
+          bgcolor: isLoading ? '#ffe0e0' : !value.trim() ? '#f4f6f9' : `${BLUE}dd`,
+          transform: height >= 60 ? 'scale(1.05)' : 'translateY(50%) scale(1.05)',
+        },
+        '&:active:not(:disabled)': {
+          transform: height >= 60 ? 'scale(0.97)' : 'translateY(50%) scale(0.97)',
+        },
       }}
     >
       {isLoading
-        ? <Box sx={{ width: 12, height: 12, bgcolor: RED, borderRadius: '2px' }} />
-        : <SendIcon sx={{ fontSize: 18, color: BLUE, transform: 'rotate(-45deg)' }} />
+        ? <StopIcon sx={{ fontSize: 15, color: RED }} />
+        : <SendIcon sx={{ fontSize: 15, color: value.trim() ? 'white' : '#c8cdd8', transform: 'rotate(-45deg)', transition: 'color 0.15s' }} />
       }
     </Box>
   </Box>

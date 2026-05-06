@@ -13,10 +13,16 @@ import {
   Fade,
   Stack,
   alpha,
+  keyframes,
   useTheme,
   IconButton,
   Tooltip
 } from '@mui/material';
+
+const dotBounce = keyframes`
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30%            { transform: translateY(-5px); opacity: 1; }
+`;
 import {
   ContentCopy as CopyIcon,
   Replay as ReplayIcon
@@ -88,24 +94,23 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         variant={message.sender === 'user' ? 'outlined' : 'elevation'}
         elevation={message.sender === 'user' ? 0 : 3}
         sx={{
-          bgcolor: message.sender === 'user' 
+          bgcolor: message.sender === 'user'
             ? theme.palette.primary.main
             : 'background.paper',
-          color: message.sender === 'user' ? 'text.primary' : 'text.primary',
+          color: 'text.primary',
           borderRadius: message.sender === 'user' ? 3 : 2,
-          border: message.sender === 'assistant' 
-            ? `1px solid ${alpha(theme.palette.divider, 0.1)}`
+          border: message.sender === 'assistant'
+            ? `1px solid ${alpha(theme.palette.divider, 0.15)}`
             : 'none',
-          boxShadow: message.sender === 'user' 
-            ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.3)}`
-            : `0 2px 12px ${alpha(theme.palette.grey[500], 0.1)}`,
-          transition: 'all 0.3s ease-in-out',
+          boxShadow: message.sender === 'user'
+            ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.25)}`
+            : `0 1px 6px ${alpha(theme.palette.grey[500], 0.08)}`,
+          transition: 'box-shadow 0.2s ease',
           '&:hover': {
-            transform: 'translateY(-1px)',
-            boxShadow: message.sender === 'user' 
-              ? `0 6px 20px ${alpha(theme.palette.primary.main, 0.4)}`
-              : `0 4px 20px ${alpha(theme.palette.grey[500], 0.15)}`,
-          }
+            boxShadow: message.sender === 'user'
+              ? `0 4px 16px ${alpha(theme.palette.primary.main, 0.35)}`
+              : `0 3px 16px ${alpha(theme.palette.grey[500], 0.14)}`,
+          },
         }}
       >
         <CardContent sx={{ 
@@ -113,6 +118,29 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
           px: { xs: 2, sm: message.sender === 'user' ? 2 : 3 }, 
           '&:last-child': { pb: message.sender === 'user' ? 2 : 3 } 
         }}>
+          {/* Typing indicator — shown immediately while connecting, before any content arrives */}
+          {message.sender === 'assistant' &&
+           message.isStreaming &&
+           !message.text?.trim() &&
+           !message.thinkingTexts?.some(t => t.trim()) &&
+           !message.streamingStatus && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: '5px', py: 0.25 }}>
+              {[0, 1, 2].map(i => (
+                <Box
+                  key={i}
+                  sx={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    bgcolor: 'text.disabled',
+                    animation: `${dotBounce} 1.2s ease-in-out infinite`,
+                    animationDelay: `${i * 0.18}s`,
+                  }}
+                />
+              ))}
+            </Box>
+          )}
+
           {/* Assistant Thinking Steps */}
           {message.sender === 'assistant' && (
             <ThinkingSteps
@@ -141,21 +169,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             />
           )}
 
-          {/* Progress Bar - Positioned After Last Accordion */}
-          {message.status === 'thinking' && message.sender === 'assistant' && (
-            <Box sx={{ mb: 2 }}>
-              <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 1 }}>
-                <Typography variant="caption" color="text.secondary">
-                  {CHAT_TEXT.THINKING_STEPS.PROCESSING_REALTIME}
-                </Typography>
-              </Stack>
-              <LinearProgress 
-                color="primary" 
-                sx={{ 
-                  height: 6, 
-                  borderRadius: 3,
-                  bgcolor: alpha(theme.palette.primary.main, 0.1)
-                }} 
+          {/* Progress bar — shown while streaming AND some content is already visible */}
+          {message.status === 'thinking' &&
+           message.sender === 'assistant' &&
+           (message.text?.trim() || message.thinkingTexts?.some(t => t.trim()) || message.streamingStatus) && (
+            <Box sx={{ mb: 1.5 }}>
+              <LinearProgress
+                color="primary"
+                sx={{
+                  height: 2,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                }}
               />
             </Box>
           )}

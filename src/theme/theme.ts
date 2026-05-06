@@ -145,14 +145,13 @@ const themeOptions: ThemeOptions = {
           fontWeight: 600,
           boxShadow: 'none',
           '&:hover': {
-            boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)',
-            transform: 'translateY(-1px)',
+            boxShadow: '0 4px 12px rgba(41, 181, 232, 0.25)',
           },
         },
         contained: {
-          background: `linear-gradient(135deg, ${brandColors.primary} 0%, ${brandColors.secondary} 100%)`,
+          backgroundColor: brandColors.primary,
           '&:hover': {
-            background: `linear-gradient(135deg, ${brandColors.primaryDark} 0%, ${brandColors.secondary} 100%)`,
+            backgroundColor: brandColors.primaryDark,
           },
         },
       },
@@ -175,16 +174,11 @@ const themeOptions: ThemeOptions = {
         },
       },
     },
-    // Card component customizations
+    // Card: no global hover transform — individual cards manage their own hover
     MuiCard: {
       styleOverrides: {
         root: {
           borderRadius: 16,
-          transition: 'all 0.3s ease',
-          '&:hover': {
-            transform: 'translateY(-2px)',
-            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
-          },
         },
       },
     },
