@@ -23,7 +23,6 @@ import {
 } from '@mui/icons-material';
 import { ChatMessage as ChatMessageType } from '../../types/chat';
 import { ThinkingSteps } from './ThinkingSteps';
-import { SqlQueriesSection } from './SqlQueriesSection';
 import { ChartsSection } from './ChartsSection';
 import { AnnotationsSection } from './AnnotationsSection';
 import { MarkdownFormatter } from './MarkdownFormatter';
@@ -32,11 +31,9 @@ import { CHAT_TEXT, MESSAGE_LABELS } from '../../constants/textConstants';
 interface ChatMessageProps {
   message: ChatMessageType;
   collapsedThinking: boolean;
-  collapsedSqlQueries: boolean;
   collapsedCharts: boolean;
   collapsedAnnotations: boolean;
   onToggleThinking: (messageId: string) => void;
-  onToggleSqlQueries: (messageId: string) => void;
   onToggleCharts: (messageId: string) => void;
   onToggleAnnotations: (messageId: string) => void;
   onResendMessage?: (text: string) => void;
@@ -45,11 +42,9 @@ interface ChatMessageProps {
 export const ChatMessage: React.FC<ChatMessageProps> = ({
   message,
   collapsedThinking,
-  collapsedSqlQueries,
   collapsedCharts,
   collapsedAnnotations,
   onToggleThinking,
-  onToggleSqlQueries,
   onToggleCharts,
   onToggleAnnotations,
   onResendMessage
@@ -81,7 +76,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         sx={{
           display: 'flex',
           flexDirection: 'column',
-          alignSelf: message.sender === 'user' ? 'center' : 'flex-start',
+          alignSelf: message.sender === 'user' ? 'flex-end' : 'flex-start',
           maxWidth: { 
             xs: message.sender === 'user' ? '85%' : '100%',
             sm: message.sender === 'user' ? '75%' : '98%'
@@ -131,19 +126,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             />
           )}
 
-          {/* SQL Queries Section - Only show when completed */}
-          {message.sender === 'assistant' && 
-           message.sqlQueries && 
-           message.sqlQueries.length > 0 && 
-           message.status === 'sent' && 
-           !message.isStreaming && (
-            <SqlQueriesSection
-              messageId={message.id}
-              sqlQueries={message.sqlQueries}
-              collapsed={collapsedSqlQueries}
-              onToggle={onToggleSqlQueries}
-            />
-          )}
 
           {/* Charts Section - Only show when completed */}
           {message.sender === 'assistant' && 

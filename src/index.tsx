@@ -5,7 +5,8 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import SimpleChatInterface from './components/Main';
+import { EnergyAssistantPopup } from './components/EnergyAssistantPopup';
+import { AWBBackground } from './components/AWBBackground';
 import { ThemeContextProvider } from './contexts/ThemeContext';
 import { CssBaseline } from '@mui/material';
 import { config } from './config/env';
@@ -170,7 +171,8 @@ const bootstrap = () => {
       <ErrorBoundary>
         <ThemeContextProvider>
           <CssBaseline />
-          <SimpleChatInterface />
+          <AWBBackground />
+          <EnergyAssistantPopup />
         </ThemeContextProvider>
       </ErrorBoundary>
     </React.StrictMode>

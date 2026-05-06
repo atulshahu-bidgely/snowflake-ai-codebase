@@ -15,8 +15,22 @@
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 const { HTTP_STATUS, ERROR_MESSAGES, CONFIG } = require('./constants');
+
+// Load system prompt once at startup — edit server/system_prompt.txt to update
+const SYSTEM_PROMPT_PATH = path.join(__dirname, 'system_prompt.txt');
+const SYSTEM_PROMPT = fs.existsSync(SYSTEM_PROMPT_PATH)
+  ? fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8').trim()
+  : null;
+
+if (SYSTEM_PROMPT) {
+  console.log('✅ System prompt loaded from system_prompt.txt');
+} else {
+  console.warn('⚠️  No system_prompt.txt found — requests will use agent instructions only');
+}
 
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
@@ -361,7 +375,24 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     if (!requestBody.messages || !Array.isArray(requestBody.messages) || requestBody.messages.length === 0) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.MESSAGES_REQUIRED });
     }
-    
+
+    // Inject formatting instructions into the last user message.
+    // Prepending to user content is more reliable than a system role message,
+    // which Snowflake Cortex Agents may silently ignore.
+    if (SYSTEM_PROMPT) {
+      const messages = requestBody.messages;
+      const lastUserIdx = [...messages].map(m => m.role).lastIndexOf('user');
+      if (lastUserIdx !== -1) {
+        const userMsg = messages[lastUserIdx];
+        const textBlock = Array.isArray(userMsg.content)
+          ? userMsg.content.find(c => c.type === 'text')
+          : null;
+        if (textBlock) {
+          textBlock.text = `${SYSTEM_PROMPT}\n\n---\n\n${textBlock.text}`;
+        }
+      }
+    }
+
     console.log(`💬 Sending message to agent: ${agentName}`);
     
     // Build Snowflake agent messaging endpoint dynamically

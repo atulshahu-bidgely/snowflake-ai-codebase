@@ -432,11 +432,9 @@ const SimpleChatInterface: React.FC = () => {
                   key={message.id}
                   message={message}
                   collapsedThinking={thinkingAccordion.isCollapsed(message.id)}
-                  collapsedSqlQueries={sqlQueriesAccordion.isCollapsed(message.id)}
                   collapsedCharts={chartsAccordion.isCollapsed(message.id)}
                   collapsedAnnotations={annotationsAccordion.isCollapsed(message.id)}
                   onToggleThinking={thinkingAccordion.toggle}
-                  onToggleSqlQueries={sqlQueriesAccordion.toggle}
                   onToggleCharts={handleChartToggle}
                   onToggleAnnotations={annotationsAccordion.toggle}
                   onResendMessage={handleResendMessage}
