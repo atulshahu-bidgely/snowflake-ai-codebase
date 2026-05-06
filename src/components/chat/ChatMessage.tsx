@@ -53,7 +53,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onToggleThinking,
   onToggleCharts,
   onToggleAnnotations,
-  onResendMessage
+  onResendMessage,
 }) => {
   const theme = useTheme();
   const [copySuccess, setCopySuccess] = useState(false);

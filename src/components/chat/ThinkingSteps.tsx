@@ -5,6 +5,7 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Divider,
   CircularProgress,
   alpha,
   useTheme,
@@ -22,6 +23,8 @@ interface ThinkingStepsProps {
   collapsed: boolean;
   onToggle: (messageId: string) => void;
 }
+
+const THINKING_SNIPPET_LIMIT = 500;
 
 export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
   messageId,
@@ -105,36 +108,40 @@ export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
             {isStreaming ? 'Thinking…' : CHAT_TEXT.THINKING_STEPS.TITLE}
           </Typography>
         </AccordionSummary>
-
-        {/* ── Content ── */}
-        <AccordionDetails sx={{ px: 2, pt: 0, pb: 1.5 }}>
-          {thinkingTexts.length > 0 &&
-            thinkingTexts.some(t => t.trim().length > 0) && (
-              <Box sx={{ borderLeft: `2px solid ${isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08)}`, pl: 1.5 }}>
-                {thinkingTexts
-                  .filter(t => t.trim().length > 0)
-                  .flatMap((text, ti) =>
-                    splitThinkingTextIntoParagraphs(text).map((para, pi) => (
-                      <Typography
-                        key={`${ti}-${pi}`}
-                        sx={{
-                          fontSize: '0.8rem',
-                          lineHeight: 1.65,
-                          color: isDark ? alpha('#fff', 0.35) : alpha('#000', 0.38),
-                          fontStyle: 'italic',
-                          mb: 0.75,
-                          '&:last-child': { mb: 0 },
-                          wordBreak: 'break-word',
-                        }}
-                      >
-                        {para}
-                      </Typography>
-                    ))
-                  )}
+        <AccordionDetails sx={{ pt: 0, pb: 1 }}>
+          <Divider sx={{ mb: 2, bgcolor: alpha(theme.palette.primary.main, 0.3) }} />
+          
+          {/* Thinking Text Display - Truncated snippet */}
+          {thinkingTexts.length > 0 && thinkingTexts.some(text => text.trim().length > 0) && (() => {
+            const combined = thinkingTexts.filter(t => t.trim()).join(' ');
+            const snippet = combined.length > THINKING_SNIPPET_LIMIT ? combined.slice(0, THINKING_SNIPPET_LIMIT).trimEnd() + '…' : combined;
+            return (
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 1.5,
+                  bgcolor: (theme) => theme.palette.mode === 'dark'
+                    ? alpha(theme.palette.grey[800], 0.6)
+                    : alpha(theme.palette.grey[50], 0.8),
+                  borderLeft: `4px solid ${alpha(theme.palette.secondary.main, 0.5)}`,
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  sx={{
+                    color: 'text.secondary',
+                    fontStyle: 'italic',
+                    fontSize: { xs: '0.8rem', sm: '0.9rem' },
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {snippet}
+                </Typography>
               </Box>
-            )}
-
-          {/* Live streaming step label */}
+            );
+          })()}
+          
+          {/* Streaming Status within Thinking Steps */}
           {isStreaming && streamingStatus && (
             <Typography
               sx={{

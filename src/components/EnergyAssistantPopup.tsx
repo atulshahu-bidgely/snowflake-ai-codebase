@@ -75,6 +75,16 @@ const GOAL_PLACEHOLDERS = [
   'Which program or rate plan are you targeting?',
 ];
 
+// Goal index 1 = "I want to analyse consumption patterns" → visualization + detail
+const ANALYSIS_GOAL_INDEX = 1;
+
+const buildPrompt = (text: string, isAnalysis: boolean): string => {
+  if (isAnalysis) {
+    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights.`;
+  }
+  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
+};
+
 export const EnergyAssistantPopup: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [inputText, setInputText] = useState('');
@@ -142,21 +152,24 @@ export const EnergyAssistantPopup: React.FC = () => {
     return last?.sender === 'assistant' && last?.status === 'sent' && !last?.isStreaming;
   }, [visibleMessages]);
 
+  const isAnalysisGoal = selectedGoal === ANALYSIS_GOAL_INDEX;
+
   const handleSubmit = useCallback(() => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
-    sendMessage(inputText.trim());
+    const display = inputText.trim();
+    sendMessage(buildPrompt(display, isAnalysisGoal), display);
     setInputText('');
-  }, [inputText, isLoading, sendMessage, cancelRequest]);
+  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysisGoal]);
 
   const handleGoalClick = useCallback((index: number) => {
     setSelectedGoal(index);
     setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
 
-  const handleChipClick = useCallback((q: string) => {
-    sendMessage(q);
-  }, [sendMessage]);
+  const handleQuestionClick = useCallback((text: string) => {
+    sendMessage(buildPrompt(text, selectedGoal === ANALYSIS_GOAL_INDEX), text);
+  }, [sendMessage, selectedGoal]);
 
   const handleNewChat = useCallback(() => {
     clearMessages();
@@ -427,11 +440,12 @@ export const EnergyAssistantPopup: React.FC = () => {
                   <Typography sx={{ fontSize: 11, fontWeight: 600, color: '#b0b8c8', fontFamily: FONT, mb: 1, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                     Suggested questions
                   </Typography>
+
                   {GOAL_OPTIONS[selectedGoal].questions.map((q, i) => (
                     <Box
                       key={i}
                       component="button"
-                      onClick={() => handleChipClick(q)}
+                      onClick={() => handleQuestionClick(q)}
                       sx={{
                         display: 'flex', alignItems: 'center', gap: '12px',
                         px: '16px', py: '12px',
@@ -513,8 +527,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       {GOAL_OPTIONS[selectedGoal].questions.map((q, i) => (
                         <Box
                           key={i}
-                          component="button"
-                          onClick={() => handleChipClick(q)}
+                          onClick={() => handleQuestionClick(q)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '6px',
                             px: '12px', py: '7px',
