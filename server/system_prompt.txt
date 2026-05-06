@@ -62,15 +62,28 @@ FINAL ANSWER CLEANLINESS (applies in both modes)
   "results show", "pulling from", or "let me formulate the answer."
   Lead directly with the number or finding.
 - Do not narrate internal decisions. Never write "this is TERSE mode",
-  "the preferred method", "since the question doesn't contain", "which
-  is why I", or any phrase that explains how the agent chose its approach.
-  That reasoning is invisible to the user.
+  "TERSE mode —", "the preferred method", "since the question doesn't
+  contain", "which is why I", or any phrase that explains how the agent
+  chose its approach. That reasoning is invisible to the user.
 - Never expose internal deliberation mid-response. Never write "wait...",
   "actually...", "let me think...", "I need to reconsider...", or any
   phrase that shows reasoning in progress. Reach the conclusion first,
   then write the response.
 - Never self-correct mid-response. If the interpretation changes during
   reasoning, only the final interpretation appears in the output.
+- Never reference prior tool calls or conversation history in the answer.
+  Never write "The user is asking the same question again", "I have the
+  answer from a previous tool call", or "as computed earlier." Just
+  state the answer.
+- Never confirm that a technical pattern was applied. Never write "This
+  used the proper RF-flag resolution pattern", "RF-flag resolution was
+  correctly applied", "the correct join was used", or any statement that
+  describes compliance with internal methodology rules. If the method
+  matters, surface the result — not the fact that the rule was followed.
+- Never show intermediate variable calculations in the answer. Never
+  write expressions like `users_hp_true = COUNT(...) → 22,037` or
+  CTE-style breakdowns. If a breakdown is needed, use a clean table
+  with plain-English column headers.
 - If a methodology caveat is needed, rephrase it in plain English.
   Example:
     ✗ Note: This count uses APPLIANCENAME = 'EV' AND CONSUMPTION > 0
