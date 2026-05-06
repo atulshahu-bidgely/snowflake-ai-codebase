@@ -75,6 +75,16 @@ const GOAL_PLACEHOLDERS = [
   'Which program or rate plan are you targeting?',
 ];
 
+// Goal index 1 = "I want to analyse consumption patterns" → visualization + detail
+const ANALYSIS_GOAL_INDEX = 1;
+
+const buildPrompt = (text: string, isAnalysis: boolean): string => {
+  if (isAnalysis) {
+    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights.`;
+  }
+  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
+};
+
 export const EnergyAssistantPopup: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [inputText, setInputText] = useState('');
@@ -144,22 +154,23 @@ export const EnergyAssistantPopup: React.FC = () => {
     return last?.sender === 'assistant' && last?.status === 'sent' && !last?.isStreaming;
   }, [visibleMessages]);
 
+  const isAnalysisGoal = selectedGoal === ANALYSIS_GOAL_INDEX;
+
   const handleSubmit = useCallback(() => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
-    sendMessage(inputText.trim());
+    const display = inputText.trim();
+    sendMessage(buildPrompt(display, isAnalysisGoal), display);
     setInputText('');
-  }, [inputText, isLoading, sendMessage, cancelRequest]);
+  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysisGoal]);
 
   const handleGoalClick = useCallback((index: number) => {
     setSelectedGoal(index);
-    // Focus the input so user can immediately type their question
-    setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
 
-  const handleChipClick = useCallback((q: string) => {
-    sendMessage(q);
-  }, [sendMessage]);
+  const handleQuestionClick = useCallback((text: string) => {
+    sendMessage(buildPrompt(text, selectedGoal === ANALYSIS_GOAL_INDEX), text);
+  }, [sendMessage, selectedGoal]);
 
   const handleAgentSwitch = useCallback((agentId: string) => {
     if (agentId === selectedAgent) return;
@@ -371,15 +382,16 @@ export const EnergyAssistantPopup: React.FC = () => {
                 </Box>
 
               ) : (
-                // ── Goal selected: suggested questions ─────────
+                // ── Goal selected: question list ─
                 <Box sx={{ flex: 1, overflowY: 'auto', px: { xs: 3, sm: '48px' }, py: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <Typography sx={{ fontSize: 12, color: '#aaa', fontFamily: 'Roboto, sans-serif', mb: 1 }}>
                     Suggested questions
                   </Typography>
+
                   {GOAL_OPTIONS[selectedGoal].questions.map((q, i) => (
                     <Box
                       key={i}
-                      onClick={() => handleChipClick(q)}
+                      onClick={() => handleQuestionClick(q)}
                       sx={{
                         display: 'flex', alignItems: 'center', gap: '12px',
                         px: '16px', py: '13px',
@@ -390,7 +402,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       }}
                     >
                       <SparkleIcon sx={{ fontSize: 14, color: BLUE, flexShrink: 0 }} />
-                      <Typography sx={{ fontSize: 14, color: '#1e232e', fontFamily: 'Roboto, sans-serif', lineHeight: 1.4 }}>
+                      <Typography sx={{ flex: 1, fontSize: 14, color: '#1e232e', fontFamily: 'Roboto, sans-serif', lineHeight: 1.4 }}>
                         {q}
                       </Typography>
                     </Box>
@@ -447,7 +459,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       {GOAL_OPTIONS[selectedGoal].questions.map((q, i) => (
                         <Box
                           key={i}
-                          onClick={() => handleChipClick(q)}
+                          onClick={() => handleQuestionClick(q)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '6px',
                             px: '12px', py: '7px',
@@ -471,7 +483,7 @@ export const EnergyAssistantPopup: React.FC = () => {
               </Box>
 
               {/* Sticky input */}
-              <Box sx={{ px: 3, py: 2, borderTop: '1px solid #eee', bgcolor: 'white', flexShrink: 0 }}>
+              <Box sx={{ px: 3, pt: 1.5, pb: 2, borderTop: '1px solid #eee', bgcolor: 'white', flexShrink: 0 }}>
                 <InputBox
                   value={inputText}
                   onChange={setInputText}

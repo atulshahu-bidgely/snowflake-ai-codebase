@@ -17,13 +17,13 @@ export const useChatMessages = (selectedAgent: string) => {
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const sendMessage = useCallback(async (message: string) => {
+  const sendMessage = useCallback(async (message: string, displayText?: string) => {
     if (!message.trim() || isLoading) return;
 
     const messageId = Date.now().toString();
     const userMessage: ChatMessage = {
       id: messageId + '_user',
-      text: message.trim(),
+      text: (displayText ?? message).trim(),
       sender: 'user',
       timestamp: new Date()
     };
