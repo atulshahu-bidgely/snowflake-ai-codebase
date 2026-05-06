@@ -5,6 +5,7 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Divider,
   CircularProgress,
   alpha,
   useTheme,
