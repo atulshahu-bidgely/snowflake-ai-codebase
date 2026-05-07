@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -12,7 +12,7 @@ import {
 } from '@mui/material';
 import { ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import { CHAT_TEXT } from '../../constants/textConstants';
-import { splitThinkingTextIntoParagraphs } from '../../utils/chatUtils';
+import { extractThinkingPreview } from '../../utils/chatUtils';
 
 interface ThinkingStepsProps {
   messageId: string;
@@ -24,8 +24,6 @@ interface ThinkingStepsProps {
   onToggle: (messageId: string) => void;
 }
 
-const THINKING_SNIPPET_LIMIT = 500;
-
 export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
   messageId,
   thinkingTexts = [],
@@ -36,6 +34,7 @@ export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
   onToggle,
 }) => {
   const theme = useTheme();
+  const previewParagraphs = useMemo(() => extractThinkingPreview(thinkingTexts), [thinkingTexts]);
 
   if (!thinkingTexts.length && !thinkingSteps.length) {
     return null;
@@ -111,35 +110,33 @@ export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
         <AccordionDetails sx={{ pt: 0, pb: 1 }}>
           <Divider sx={{ mb: 2, bgcolor: alpha(theme.palette.primary.main, 0.3) }} />
           
-          {/* Thinking Text Display - Truncated snippet */}
-          {thinkingTexts.length > 0 && thinkingTexts.some(text => text.trim().length > 0) && (() => {
-            const combined = thinkingTexts.filter(t => t.trim()).join(' ');
-            const snippet = combined.length > THINKING_SNIPPET_LIMIT ? combined.slice(0, THINKING_SNIPPET_LIMIT).trimEnd() + '…' : combined;
-            return (
-              <Box
+          {/* Top 2 meaningful paragraphs — table names, schema, reasoning extracted in background */}
+          {previewParagraphs.map((para: string, i: number) => (
+            <Box
+              key={i}
+              sx={{
+                p: 2,
+                mb: i < previewParagraphs.length - 1 ? 1 : 0,
+                borderRadius: 1.5,
+                bgcolor: isDark
+                  ? alpha(theme.palette.grey[800], 0.6)
+                  : alpha(theme.palette.grey[50], 0.8),
+                borderLeft: `4px solid ${alpha(theme.palette.secondary.main, 0.5)}`,
+              }}
+            >
+              <Typography
+                variant="body2"
                 sx={{
-                  p: 2,
-                  borderRadius: 1.5,
-                  bgcolor: (theme) => theme.palette.mode === 'dark'
-                    ? alpha(theme.palette.grey[800], 0.6)
-                    : alpha(theme.palette.grey[50], 0.8),
-                  borderLeft: `4px solid ${alpha(theme.palette.secondary.main, 0.5)}`,
+                  color: 'text.secondary',
+                  fontStyle: 'italic',
+                  fontSize: { xs: '0.8rem', sm: '0.9rem' },
+                  lineHeight: 1.6,
                 }}
               >
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: 'text.secondary',
-                    fontStyle: 'italic',
-                    fontSize: { xs: '0.8rem', sm: '0.9rem' },
-                    lineHeight: 1.6,
-                  }}
-                >
-                  {snippet}
-                </Typography>
-              </Box>
-            );
-          })()}
+                {para}
+              </Typography>
+            </Box>
+          ))}
           
           {/* Streaming Status within Thinking Steps */}
           {isStreaming && streamingStatus && (
