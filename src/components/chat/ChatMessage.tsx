@@ -12,6 +12,7 @@ import {
 import {
   ContentCopy as CopyIcon,
   Replay as ReplayIcon,
+  FileDownload as DownloadIcon,
 } from '@mui/icons-material';
 import { ChatMessage as ChatMessageType } from '../../types/chat';
 import { ThinkingSteps } from './ThinkingSteps';
@@ -75,6 +76,32 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
   const handleResend = () => {
     if (onResendMessage && message.text) onResendMessage(message.text);
+  };
+
+  const hasTable = Boolean(
+    message.text &&
+    /\|.+\|/.test(message.text) &&
+    /\|\s*[-:]+\s*\|/.test(message.text)
+  );
+
+  const handleDownloadCsv = () => {
+    if (!message.text) return;
+    const lines = message.text.split('\n');
+    const tableLines = lines.filter(
+      l => l.trim().startsWith('|') && !/^\|\s*[-:]+[\s|:-]*\|/.test(l.trim())
+    );
+    if (tableLines.length === 0) return;
+    const csvRows = tableLines.map(line =>
+      line.trim().replace(/^\||\|$/g, '').split('|').map(cell => {
+        const v = cell.trim();
+        return v.includes(',') || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v;
+      }).join(',')
+    );
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'energy_data.csv'; a.click();
+    URL.revokeObjectURL(url);
   };
 
   const isUser      = message.sender === 'user';
@@ -333,6 +360,17 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 <CopyIcon sx={{ fontSize: 15 }} />
               </IconButton>
             </Tooltip>
+            {hasTable && (
+              <Tooltip title="Download as CSV" arrow>
+                <IconButton
+                  onClick={handleDownloadCsv}
+                  size="small"
+                  sx={{ color: TEXT2, p: '4px', borderRadius: '6px', '&:hover': { color: BLUE, bgcolor: BLUE_BG } }}
+                >
+                  <DownloadIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Tooltip>
+            )}
           </Stack>
         )}
       </Box>

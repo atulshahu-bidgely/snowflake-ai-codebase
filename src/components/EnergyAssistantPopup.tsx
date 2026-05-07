@@ -24,7 +24,6 @@ import {
   ChevronRight as ArrowIcon,
   Stop as StopIcon,
   ExpandMore as ExpandMoreIcon,
-  Storage as AgentIcon,
 } from '@mui/icons-material';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { useChatMessages } from '../hooks/useChatMessages';
@@ -36,14 +35,16 @@ const GRADIENT = 'linear-gradient(135deg, #0f4184 0%, #1e62c1 28%, #94207b 55%, 
 const BLUE     = '#0c6ae9';
 const RED      = '#e4194b';
 
-const CATEGORIES = [
+type PromptMode = 'data' | 'analysis' | 'targeting';
+
+const CATEGORIES: { Icon: typeof SearchIcon; label: string; description: string; color: string; bg: string; mode: PromptMode; questions: string[] }[] = [
   {
     Icon: SearchIcon,
     label: 'Get Data',
     description: 'Pull metrics, counts, and account lists from your energy data',
     color: '#2563EB',
     bg: '#EFF6FF',
-    isAnalysis: false,
+    mode: 'data',
     questions: [
       'How many EVs are there in the region?',
       'How many users are enrolled in the Cooling DR Program?',
@@ -57,7 +58,7 @@ const CATEGORIES = [
     description: 'Explore consumption patterns, trends, and segment behaviour',
     color: '#7C3AED',
     bg: '#F5F3FF',
-    isAnalysis: true,
+    mode: 'analysis',
     questions: [
       'How has the EV ownership trend changed across the region?',
       'Which time period has the most frequent EV Charging?',
@@ -70,7 +71,7 @@ const CATEGORIES = [
     description: 'Find eligible accounts for programs, rebates, or rate plans',
     color: '#059669',
     bg: '#ECFDF5',
-    isAnalysis: false,
+    mode: 'targeting',
     questions: [
       'Target users with inefficient cooling and heating for weatherisation',
       'Find 3,000 customers for a heatpump rebate with least efficient heating',
@@ -79,9 +80,12 @@ const CATEGORIES = [
   },
 ];
 
-const buildPrompt = (text: string, isAnalysis: boolean): string => {
-  if (isAnalysis) {
+const buildPrompt = (text: string, mode: PromptMode): string => {
+  if (mode === 'analysis') {
     return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights.`;
+  }
+  if (mode === 'targeting') {
+    return `${text}\n\nIMPORTANT: This is a program targeting request. Identify all eligible customers and return a comprehensive markdown table listing each one. Include relevant attributes such as premise ID, ZIP code, usage metrics, appliance efficiency ratings, income group, and any other qualifying criteria. After the table provide a brief summary with the total eligible count and key insights.`;
   }
   return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
 };
@@ -102,8 +106,8 @@ export const EnergyAssistantPopup: React.FC = () => {
       .map(([id, cfg]) => ({ id, displayName: cfg.displayName }));
   }, [agentConfig]);
 
-  const [selectedAgent, setSelectedAgent]       = useState<string>('');
-  const [agentMenuAnchor, setAgentMenuAnchor]   = useState<null | HTMLElement>(null);
+  const [selectedAgent, setSelectedAgent]     = useState<string>('');
+  const [goalMenuAnchor, setGoalMenuAnchor]   = useState<null | HTMLElement>(null);
 
   useEffect(() => {
     if (agentList.length > 0 && !selectedAgent) setSelectedAgent(agentList[0].id);
@@ -154,20 +158,21 @@ export const EnergyAssistantPopup: React.FC = () => {
     return last?.sender === 'assistant' && last?.status === 'sent' && !last?.isStreaming;
   }, [visibleMessages]);
 
-  const isAnalysis = selectedCategory !== null
-    ? CATEGORIES[selectedCategory].isAnalysis
-    : false;
+  const currentMode: PromptMode = selectedCategory !== null
+    ? CATEGORIES[selectedCategory].mode
+    : 'data';
 
   const handleSubmit = useCallback(() => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
     const display = inputText.trim();
-    sendMessage(buildPrompt(display, isAnalysis), display);
+    const mode: PromptMode = selectedCategory !== null ? CATEGORIES[selectedCategory].mode : 'data';
+    sendMessage(buildPrompt(display, mode), display);
     setInputText('');
-  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis]);
+  }, [inputText, isLoading, sendMessage, cancelRequest, selectedCategory]);
 
-  const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean) => {
-    sendMessage(buildPrompt(text, catIsAnalysis), text);
+  const handleQuestionClick = useCallback((text: string, mode: PromptMode) => {
+    sendMessage(buildPrompt(text, mode), text);
   }, [sendMessage]);
 
   const handleCategoryClick = useCallback((index: number) => {
@@ -252,54 +257,73 @@ export const EnergyAssistantPopup: React.FC = () => {
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
 
-            {/* Agent switcher */}
-            {agentList.length > 0 && (
-              <>
-                <Box
-                  component="button"
-                  onClick={e => setAgentMenuAnchor(e.currentTarget as HTMLElement)}
-                  sx={{
-                    display: 'flex', alignItems: 'center', gap: '5px',
-                    cursor: 'pointer', border: '1px solid #e8eaed', borderRadius: '7px',
-                    bgcolor: 'transparent', px: '10px', py: '5px',
-                    maxWidth: 200,
-                    transition: 'all 0.15s',
-                    '&:hover': { bgcolor: '#f4f6f9', borderColor: '#d0d4db' },
-                  }}
-                >
-                  <AgentIcon sx={{ fontSize: 13, color: BLUE, flexShrink: 0 }} />
-                  <Typography sx={{
-                    fontSize: 13, color: '#444', fontFamily: FONT, fontWeight: 500,
-                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                  }}>
-                    {agentList.find(a => a.id === selectedAgent)?.displayName ?? 'Select agent'}
-                  </Typography>
-                  <ExpandMoreIcon sx={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
-                </Box>
-                <Menu
-                  anchorEl={agentMenuAnchor}
-                  open={Boolean(agentMenuAnchor)}
-                  onClose={() => setAgentMenuAnchor(null)}
-                  slotProps={{ paper: { sx: { mt: '6px', minWidth: 200, borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.12)', border: '1px solid #e8eaed' } } }}
-                >
-                  {agentList.map(agent => (
-                    <MenuItem
-                      key={agent.id}
-                      selected={agent.id === selectedAgent}
-                      onClick={() => { setSelectedAgent(agent.id); setAgentMenuAnchor(null); }}
-                      sx={{
-                        fontSize: 13, fontFamily: FONT, borderRadius: '6px', mx: '4px',
-                        '&.Mui-selected': { bgcolor: `${BLUE}0f`, color: BLUE, fontWeight: 600 },
-                        '&.Mui-selected:hover': { bgcolor: `${BLUE}18` },
-                      }}
-                    >
-                      {agent.displayName}
-                    </MenuItem>
-                  ))}
-                </Menu>
-                <Divider orientation="vertical" flexItem sx={{ height: 18, alignSelf: 'center' }} />
-              </>
-            )}
+            {/* Goal switcher — only visible in chat state */}
+            {visibleMessages.length > 0 && <>
+              <Box
+                component="button"
+                onClick={e => !isLoading && setGoalMenuAnchor(e.currentTarget as HTMLElement)}
+                sx={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  border: '1px solid #e8eaed', borderRadius: '7px',
+                  bgcolor: selectedCategory !== null ? `${CATEGORIES[selectedCategory].color}08` : 'transparent',
+                  borderColor: selectedCategory !== null ? `${CATEGORIES[selectedCategory].color}40` : '#e8eaed',
+                  px: '10px', py: '5px',
+                  opacity: isLoading ? 0.45 : 1,
+                  transition: 'all 0.15s',
+                  '&:hover': isLoading ? {} : { bgcolor: '#f4f6f9', borderColor: '#d0d4db' },
+                }}
+              >
+                {(() => {
+                  if (selectedCategory === null) return <SparkleIcon sx={{ fontSize: 13, color: '#aaa', flexShrink: 0 }} />;
+                  const CatIcon = CATEGORIES[selectedCategory].Icon;
+                  return <CatIcon sx={{ fontSize: 13, color: CATEGORIES[selectedCategory].color, flexShrink: 0 }} />;
+                })()}
+                <Typography sx={{
+                  fontSize: 13, fontFamily: FONT, fontWeight: 500, whiteSpace: 'nowrap',
+                  color: selectedCategory !== null ? CATEGORIES[selectedCategory].color : '#888',
+                }}>
+                  {selectedCategory !== null ? CATEGORIES[selectedCategory].label : 'Choose a goal'}
+                </Typography>
+                <ExpandMoreIcon sx={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
+              </Box>
+              <Menu
+                anchorEl={goalMenuAnchor}
+                open={Boolean(goalMenuAnchor)}
+                onClose={() => setGoalMenuAnchor(null)}
+                slotProps={{ paper: { sx: { mt: '6px', minWidth: 210, borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.12)', border: '1px solid #e8eaed', p: '4px', bgcolor: '#ffffff', color: '#1a1d23' } } }}
+              >
+                {CATEGORIES.map((cat, ci) => (
+                  <MenuItem
+                    key={ci}
+                    selected={ci === selectedCategory}
+                    onClick={() => { setSelectedCategory(ci); setGoalMenuAnchor(null); }}
+                    sx={{
+                      display: 'flex', alignItems: 'center', gap: '10px',
+                      fontSize: 13, fontFamily: FONT, borderRadius: '7px', py: '8px',
+                      '&.Mui-selected': { bgcolor: `${cat.color}0f` },
+                      '&.Mui-selected:hover': { bgcolor: `${cat.color}18` },
+                    }}
+                  >
+                    <Box sx={{
+                      width: 26, height: 26, borderRadius: '7px', bgcolor: cat.bg,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <cat.Icon sx={{ fontSize: 14, color: cat.color }} />
+                    </Box>
+                    <Box>
+                      <Typography sx={{ fontSize: 13, fontWeight: ci === selectedCategory ? 600 : 500, color: ci === selectedCategory ? cat.color : '#1a1d23', fontFamily: FONT }}>
+                        {cat.label}
+                      </Typography>
+                      <Typography sx={{ fontSize: 11, color: '#94a3b8', fontFamily: FONT, lineHeight: 1.3 }}>
+                        {cat.description}
+                      </Typography>
+                    </Box>
+                  </MenuItem>
+                ))}
+              </Menu>
+              <Divider orientation="vertical" flexItem sx={{ height: 18, alignSelf: 'center' }} />
+            </>}
 
             <Box
               component="button"
@@ -515,7 +539,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                         <Box
                           key={qi}
                           component="button"
-                          onClick={() => handleQuestionClick(q, activeCat.isAnalysis)}
+                          onClick={() => handleQuestionClick(q, activeCat.mode)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '12px',
                             px: '18px', py: '14px',
@@ -623,7 +647,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                         <Box
                           key={i}
                           component="button"
-                          onClick={() => handleQuestionClick(q, isAnalysis)}
+                          onClick={() => handleQuestionClick(q, currentMode)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '6px',
                             px: '12px', py: '7px',
@@ -666,7 +690,7 @@ export const EnergyAssistantPopup: React.FC = () => {
       <Zoom in={!open}>
         <Fab
           onClick={() => setOpen(true)}
-          aria-label="Open Energy Assistant"
+          aria-label="Open Energy Analyzer"
           sx={{
             position: 'fixed', bottom: 32, right: 32,
             background: GRADIENT, color: 'white', zIndex: 1200,
