@@ -67,7 +67,8 @@ const CATEGORIES = [
     color: '#059669',
     bg: '#ECFDF5',
     isAnalysis: false,
-    questions: [
+    isTarget: true,
+   questions: [
       'Target users with inefficient cooling and heating for weatherisation',
       'Find 3,000 customers for a heatpump rebate with least efficient heating',
       'Top 5 grid assets with high EV charging utilization in peak periods',
@@ -75,9 +76,22 @@ const CATEGORIES = [
   },
 ];
 
-const buildPrompt = (text: string, isAnalysis: boolean): string => {
+const buildPrompt = (text: string, isAnalysis: boolean, isTarget: boolean = false): string => {
+  if (isTarget) {
+    const numberMatch = text.match(/\b([1-9]\d{0,2}(?:,\d{3})*|\d+)\b/);
+    const tableLimit  = numberMatch ? parseInt(numberMatch[1].replace(/,/g, ''), 10) : 15;
+    return `${text}\n\nIMPORTANT: This is a program targeting question. Provide detailed insights with trends, patterns, and key observations from the data.
+Return:
+1. A detailed analytical summary with trends and insights.
+2. A chart or visualization summarising the result distribution (e.g. by ZIP code, efficiency tier, income band, or other relevant grouping). Show a maximum of 10 data points in the chart — use the top 10 groups by count or value so the chart stays readable.
+3. A markdown table of the top ${tableLimit} most relevant matching records — this table will be downloaded as a CSV by the field team.
+   - Every row must contain real customer/account data values (actual IDs, ZIP codes, metric values, categories, scores).
+   - Do NOT describe columns — return actual data rows only.
+   - Choose the most relevant columns dynamically based on the question.
+Do not show sources.`;
+  }
   if (isAnalysis) {
-    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights.`;
+    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights. Do not show sources.`;
   }
   return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
 };
@@ -138,20 +152,19 @@ export const EnergyAssistantPopup: React.FC = () => {
     [messages]
   );
 
-  const isAnalysis = selectedCategory !== null
-    ? CATEGORIES[selectedCategory].isAnalysis
-    : false;
+  const isAnalysis = selectedCategory !== null ? CATEGORIES[selectedCategory].isAnalysis : false;
+  const isTarget   = selectedCategory !== null ? (CATEGORIES[selectedCategory] as any).isTarget ?? false : false;
 
   const handleSubmit = useCallback(() => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
     const display = inputText.trim();
-    sendMessage(buildPrompt(display, isAnalysis), display);
+    sendMessage(buildPrompt(display, isAnalysis, isTarget), display, isTarget);
     setInputText('');
-  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis]);
+  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis, isTarget]);
 
-  const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean) => {
-    sendMessage(buildPrompt(text, catIsAnalysis), text);
+  const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean, catIsTarget: boolean = false) => {
+    sendMessage(buildPrompt(text, catIsAnalysis, catIsTarget), text, catIsTarget);
   }, [sendMessage]);
 
   const handleCategoryClick = useCallback((index: number) => {
@@ -385,7 +398,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                           {cat.description}
                         </Typography>
 
-                        {/* Question count badge */}
+                        {/* Question count / open-ended badge */}
                         <Box sx={{
                           display: 'inline-flex', alignItems: 'center',
                           mt: '14px', px: '8px', py: '3px',
@@ -397,7 +410,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                             fontSize: 11, fontWeight: 600, color: cat.color,
                             fontFamily: FONT, letterSpacing: '0.01em',
                           }}>
-                            {cat.questions.length} suggested questions
+                            {cat.questions.length > 0 ? `${cat.questions.length} suggested questions` : 'Open-ended — ask anything'}
                           </Typography>
                         </Box>
                       </Box>
@@ -443,13 +456,13 @@ export const EnergyAssistantPopup: React.FC = () => {
                       </Typography>
                     </Box>
 
-                    {/* Question list */}
+                    {/* Question list — hidden for open-ended categories */}
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {activeCat.questions.map((q, qi) => (
                         <Box
                           key={qi}
                           component="button"
-                          onClick={() => handleQuestionClick(q, activeCat.isAnalysis)}
+                          onClick={() => handleQuestionClick(q, activeCat.isAnalysis, (activeCat as any).isTarget ?? false)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '12px',
                             px: '18px', py: '14px',
@@ -537,7 +550,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       onToggleThinking={thinkingAccordion.toggle}
                       onToggleCharts={chartsAccordion.toggle}
                       onToggleAnnotations={annotationsAccordion.toggle}
-                      onResendMessage={sendMessage}
+                      onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget)}
                     />
                   ))}
                 </Stack>

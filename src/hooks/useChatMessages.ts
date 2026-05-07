@@ -17,7 +17,7 @@ export const useChatMessages = (selectedAgent: string) => {
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const sendMessage = useCallback(async (message: string, displayText?: string) => {
+  const sendMessage = useCallback(async (message: string, displayText?: string, isTarget?: boolean) => {
     if (!message.trim() || isLoading) return;
 
     const messageId = Date.now().toString();
@@ -40,7 +40,8 @@ export const useChatMessages = (selectedAgent: string) => {
       thinkingSteps: [],
       sqlQueries: [],
       timeline: [],
-      toolsUsed: []
+      toolsUsed: [],
+      isTarget: isTarget ?? false,
     };
 
     setMessages(prev => {
