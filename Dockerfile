@@ -3,7 +3,7 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY public/ ./public/
 COPY src/ ./src/
 COPY tsconfig.json ./
@@ -24,7 +24,7 @@ COPY nginx-combined.conf /etc/nginx/nginx.conf
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 COPY server/ ./server/
 
 COPY --from=builder /app/build /usr/share/nginx/html
