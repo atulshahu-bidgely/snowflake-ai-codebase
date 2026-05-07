@@ -9,6 +9,8 @@ import {
   Divider,
   Fab,
   Zoom,
+  Menu,
+  MenuItem,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -21,6 +23,8 @@ import {
   ArrowBack as BackIcon,
   ChevronRight as ArrowIcon,
   Stop as StopIcon,
+  ExpandMore as ExpandMoreIcon,
+  Storage as AgentIcon,
 } from '@mui/icons-material';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { useChatMessages } from '../hooks/useChatMessages';
@@ -98,10 +102,17 @@ export const EnergyAssistantPopup: React.FC = () => {
       .map(([id, cfg]) => ({ id, displayName: cfg.displayName }));
   }, [agentConfig]);
 
-  const [selectedAgent, setSelectedAgent] = useState<string>('');
+  const [selectedAgent, setSelectedAgent]       = useState<string>('');
+  const [agentMenuAnchor, setAgentMenuAnchor]   = useState<null | HTMLElement>(null);
+
   useEffect(() => {
     if (agentList.length > 0 && !selectedAgent) setSelectedAgent(agentList[0].id);
   }, [agentList, selectedAgent]);
+
+  const agentStarterQuestions = useMemo(() => {
+    if (!agentConfig || !selectedAgent) return [];
+    return agentConfig.agents[selectedAgent]?.starterQuestions ?? [];
+  }, [agentConfig, selectedAgent]);
 
   const { messages, isLoading, sendMessage, cancelRequest, clearMessages } =
     useChatMessages(selectedAgent);
@@ -137,6 +148,11 @@ export const EnergyAssistantPopup: React.FC = () => {
     }),
     [messages]
   );
+
+  const lastMessageComplete = useMemo(() => {
+    const last = visibleMessages[visibleMessages.length - 1];
+    return last?.sender === 'assistant' && last?.status === 'sent' && !last?.isStreaming;
+  }, [visibleMessages]);
 
   const isAnalysis = selectedCategory !== null
     ? CATEGORIES[selectedCategory].isAnalysis
@@ -225,7 +241,7 @@ export const EnergyAssistantPopup: React.FC = () => {
               <SparkleIcon sx={{ fontSize: 15, color: 'white' }} />
             </Box>
             <Typography sx={{ fontSize: 15, fontWeight: 600, color: '#1a1d23', fontFamily: FONT, letterSpacing: '-0.01em' }}>
-              Energy Assistant
+              Energy Analyzer
             </Typography>
             <Box sx={{ bgcolor: '#f0f0f0', borderRadius: '4px', px: '6px', py: '2px' }}>
               <Typography sx={{ fontSize: 10, fontWeight: 500, color: '#888', fontFamily: FONT, letterSpacing: '0.03em', textTransform: 'uppercase' }}>
@@ -235,6 +251,56 @@ export const EnergyAssistantPopup: React.FC = () => {
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+
+            {/* Agent switcher */}
+            {agentList.length > 0 && (
+              <>
+                <Box
+                  component="button"
+                  onClick={e => setAgentMenuAnchor(e.currentTarget as HTMLElement)}
+                  sx={{
+                    display: 'flex', alignItems: 'center', gap: '5px',
+                    cursor: 'pointer', border: '1px solid #e8eaed', borderRadius: '7px',
+                    bgcolor: 'transparent', px: '10px', py: '5px',
+                    maxWidth: 200,
+                    transition: 'all 0.15s',
+                    '&:hover': { bgcolor: '#f4f6f9', borderColor: '#d0d4db' },
+                  }}
+                >
+                  <AgentIcon sx={{ fontSize: 13, color: BLUE, flexShrink: 0 }} />
+                  <Typography sx={{
+                    fontSize: 13, color: '#444', fontFamily: FONT, fontWeight: 500,
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}>
+                    {agentList.find(a => a.id === selectedAgent)?.displayName ?? 'Select agent'}
+                  </Typography>
+                  <ExpandMoreIcon sx={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
+                </Box>
+                <Menu
+                  anchorEl={agentMenuAnchor}
+                  open={Boolean(agentMenuAnchor)}
+                  onClose={() => setAgentMenuAnchor(null)}
+                  slotProps={{ paper: { sx: { mt: '6px', minWidth: 200, borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.12)', border: '1px solid #e8eaed' } } }}
+                >
+                  {agentList.map(agent => (
+                    <MenuItem
+                      key={agent.id}
+                      selected={agent.id === selectedAgent}
+                      onClick={() => { setSelectedAgent(agent.id); setAgentMenuAnchor(null); }}
+                      sx={{
+                        fontSize: 13, fontFamily: FONT, borderRadius: '6px', mx: '4px',
+                        '&.Mui-selected': { bgcolor: `${BLUE}0f`, color: BLUE, fontWeight: 600 },
+                        '&.Mui-selected:hover': { bgcolor: `${BLUE}18` },
+                      }}
+                    >
+                      {agent.displayName}
+                    </MenuItem>
+                  ))}
+                </Menu>
+                <Divider orientation="vertical" flexItem sx={{ height: 18, alignSelf: 'center' }} />
+              </>
+            )}
+
             <Box
               component="button"
               onClick={handleNewChat}
@@ -541,6 +607,43 @@ export const EnergyAssistantPopup: React.FC = () => {
                     />
                   ))}
                 </Stack>
+
+                {/* Follow-up chips from agent's starter questions */}
+                {lastMessageComplete && agentStarterQuestions.length > 0 && (
+                  <Box sx={{ mt: 3, mb: 1 }}>
+                    <Typography sx={{
+                      fontSize: 10.5, fontWeight: 700, color: '#b0b8c8',
+                      fontFamily: FONT, mb: 1.5, pl: '2px',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                    }}>
+                      Try asking
+                    </Typography>
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {agentStarterQuestions.slice(0, 4).map((q, i) => (
+                        <Box
+                          key={i}
+                          component="button"
+                          onClick={() => handleQuestionClick(q, isAnalysis)}
+                          sx={{
+                            display: 'flex', alignItems: 'center', gap: '6px',
+                            px: '12px', py: '7px',
+                            bgcolor: 'white',
+                            border: `1.5px solid ${BLUE}28`,
+                            borderRadius: '20px',
+                            cursor: 'pointer',
+                            fontFamily: FONT, fontSize: 12.5, color: '#2a2e3a',
+                            transition: 'all 0.15s',
+                            '&:hover': { bgcolor: `${BLUE}08`, borderColor: `${BLUE}60`, color: BLUE },
+                          }}
+                        >
+                          <SparkleIcon sx={{ fontSize: 11, color: BLUE, flexShrink: 0 }} />
+                          {q}
+                        </Box>
+                      ))}
+                    </Box>
+                  </Box>
+                )}
+
                 <div ref={messagesEndRef} />
               </Box>
 
