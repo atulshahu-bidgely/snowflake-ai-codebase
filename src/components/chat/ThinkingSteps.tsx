@@ -5,14 +5,19 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  Divider,
   CircularProgress,
-  alpha,
-  useTheme,
 } from '@mui/material';
 import { ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import { CHAT_TEXT } from '../../constants/textConstants';
 import { splitThinkingTextIntoParagraphs } from '../../utils/chatUtils';
+
+// explicit tokens — no theme inheritance
+const BG     = '#EFF6FF';  // Blue-50
+const BORDER = '#BFDBFE';  // Blue-200
+const TITLE  = '#1D4ED8';  // Blue-700  (contrast 5.9:1 on #EFF6FF)
+const RULE   = '#93C5FD';  // Blue-300
+const TEXT   = '#374151';  // Gray-700  (contrast 9.7:1 on #EFF6FF)
+const STATUS = '#4B5563';  // Gray-600
 
 interface ThinkingStepsProps {
   messageId: string;
@@ -24,8 +29,6 @@ interface ThinkingStepsProps {
   onToggle: (messageId: string) => void;
 }
 
-const THINKING_SNIPPET_LIMIT = 500;
-
 export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
   messageId,
   thinkingTexts = [],
@@ -35,121 +38,94 @@ export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
   collapsed,
   onToggle,
 }) => {
-  const theme = useTheme();
-
-  if (!thinkingTexts.length && !thinkingSteps.length) {
+  if (!isStreaming && !thinkingTexts.length && !thinkingSteps.length) {
     return null;
   }
-
-  const isDark = theme.palette.mode === 'dark';
 
   return (
     <Box
       sx={{
-        mb: 1.5,
-        borderRadius: 1,
-        border: `1px solid ${isDark ? alpha('#fff', 0.06) : alpha('#000', 0.07)}`,
-        bgcolor: isDark ? alpha('#fff', 0.02) : alpha('#000', 0.015),
+        mb: 2,
+        borderRadius: '10px',
+        border: `1px solid ${BORDER}`,
+        bgcolor: BG,
         overflow: 'hidden',
       }}
     >
       <Accordion
         expanded={!collapsed}
         onChange={() => onToggle(messageId)}
+        disableGutters
         sx={{
           boxShadow: 'none',
-          backgroundColor: 'transparent',
+          background: 'transparent',
           '&:before': { display: 'none' },
         }}
       >
-        {/* ── Header ── */}
+        {/* Header */}
         <AccordionSummary
-          expandIcon={
-            <ExpandMoreIcon
-              sx={{ fontSize: 16, color: 'text.disabled', opacity: 0.6 }}
-            />
-          }
+          expandIcon={<ExpandMoreIcon sx={{ fontSize: 15, color: TITLE }} />}
           sx={{
-            minHeight: 'unset',
+            minHeight: '38px',
             px: 2,
-            py: 0.75,
-            '& .MuiAccordionSummary-content': { margin: 0, alignItems: 'center', gap: 1 },
-            '&.Mui-expanded': { minHeight: 'unset' },
-            '& .MuiAccordionSummary-content.Mui-expanded': { margin: 0 },
+            py: 0,
+            background: 'transparent',
+            '& .MuiAccordionSummary-content': { margin: '10px 0', alignItems: 'center', gap: '8px' },
+            '&.Mui-expanded': { minHeight: '38px' },
           }}
         >
-          {/* Live spinner when streaming, static dot when done */}
           {isStreaming ? (
-            <CircularProgress
-              size={11}
-              thickness={4}
-              sx={{ color: 'text.disabled', opacity: 0.5, flexShrink: 0 }}
-            />
+            <CircularProgress size={11} thickness={4} sx={{ color: TITLE, flexShrink: 0 }} />
           ) : (
-            <Box
-              sx={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                bgcolor: isDark ? alpha('#fff', 0.2) : alpha('#000', 0.18),
-                flexShrink: 0,
-              }}
-            />
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: RULE, flexShrink: 0 }} />
           )}
           <Typography
             sx={{
               fontSize: '0.75rem',
-              fontWeight: 500,
-              color: 'text.disabled',
-              letterSpacing: '0.01em',
+              fontWeight: 600,
+              color: TITLE,
+              letterSpacing: '0.02em',
               userSelect: 'none',
             }}
           >
             {isStreaming ? 'Thinking…' : CHAT_TEXT.THINKING_STEPS.TITLE}
           </Typography>
         </AccordionSummary>
-        <AccordionDetails sx={{ pt: 0, pb: 1 }}>
-          <Divider sx={{ mb: 2, bgcolor: alpha(theme.palette.primary.main, 0.3) }} />
-          
-          {/* Thinking Text Display - Truncated snippet */}
-          {thinkingTexts.length > 0 && thinkingTexts.some(text => text.trim().length > 0) && (() => {
-            const combined = thinkingTexts.filter(t => t.trim()).join(' ');
-            const snippet = combined.length > THINKING_SNIPPET_LIMIT ? combined.slice(0, THINKING_SNIPPET_LIMIT).trimEnd() + '…' : combined;
-            return (
-              <Box
-                sx={{
-                  p: 2,
-                  borderRadius: 1.5,
-                  bgcolor: (theme) => theme.palette.mode === 'dark'
-                    ? alpha(theme.palette.grey[800], 0.6)
-                    : alpha(theme.palette.grey[50], 0.8),
-                  borderLeft: `4px solid ${alpha(theme.palette.secondary.main, 0.5)}`,
-                }}
-              >
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: 'text.secondary',
-                    fontStyle: 'italic',
-                    fontSize: { xs: '0.8rem', sm: '0.9rem' },
-                    lineHeight: 1.6,
-                  }}
-                >
-                  {snippet}
-                </Typography>
-              </Box>
-            );
-          })()}
-          
-          {/* Streaming Status within Thinking Steps */}
+
+        {/* Content */}
+        <AccordionDetails sx={{ px: 2, pt: 0, pb: 1.5, background: 'transparent' }}>
+          {thinkingTexts.length > 0 && thinkingTexts.some(t => t.trim()) && (
+            <Box sx={{ borderLeft: `2px solid ${RULE}`, pl: 1.5 }}>
+              {thinkingTexts
+                .filter(t => t.trim())
+                .flatMap((text, ti) =>
+                  splitThinkingTextIntoParagraphs(text).map((para, pi) => (
+                    <Typography
+                      key={`${ti}-${pi}`}
+                      sx={{
+                        fontSize: '0.8125rem',
+                        lineHeight: 1.65,
+                        color: TEXT,
+                        fontStyle: 'italic',
+                        mb: 0.75,
+                        '&:last-child': { mb: 0 },
+                        wordBreak: 'break-word',
+                      }}
+                    >
+                      {para}
+                    </Typography>
+                  ))
+                )}
+            </Box>
+          )}
+
           {isStreaming && streamingStatus && (
             <Typography
               sx={{
                 fontSize: '0.75rem',
-                color: 'text.disabled',
+                color: STATUS,
                 fontStyle: 'italic',
                 mt: thinkingTexts.some(t => t.trim()) ? 1 : 0,
-                opacity: 0.7,
               }}
             >
               {streamingStatus}

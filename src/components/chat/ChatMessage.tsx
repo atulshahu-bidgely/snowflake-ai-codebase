@@ -1,38 +1,42 @@
-/**
- * ChatMessage Component
- * Displays a single chat message (user or assistant) with all associated content
- */
-
 import React, { useState } from 'react';
 import {
   Box,
-  Card,
-  CardContent,
   Typography,
   LinearProgress,
   Fade,
   Stack,
-  alpha,
   keyframes,
-  useTheme,
   IconButton,
-  Tooltip
+  Tooltip,
 } from '@mui/material';
-
-const dotBounce = keyframes`
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30%            { transform: translateY(-5px); opacity: 1; }
-`;
 import {
   ContentCopy as CopyIcon,
-  Replay as ReplayIcon
+  Replay as ReplayIcon,
 } from '@mui/icons-material';
 import { ChatMessage as ChatMessageType } from '../../types/chat';
 import { ThinkingSteps } from './ThinkingSteps';
 import { ChartsSection } from './ChartsSection';
 import { AnnotationsSection } from './AnnotationsSection';
 import { MarkdownFormatter } from './MarkdownFormatter';
-import { CHAT_TEXT, MESSAGE_LABELS } from '../../constants/textConstants';
+import { MESSAGE_LABELS } from '../../constants/textConstants';
+
+// explicit tokens — no MUI theme inheritance
+const BLUE     = '#2563EB';
+const BLUE_BG  = '#EFF6FF';
+const BLUE_SHD = 'rgba(37,99,235,0.28)';
+const TEXT     = '#1E293B';
+const TEXT2    = '#64748B';
+const BORDER   = '#E2E8F0';
+const AMBER_BG = '#FFFBEB';
+const AMBER_BD = '#FCD34D';
+const AMBER_LB = '#F59E0B';
+const AMBER_H  = '#92400E';
+const AMBER_B  = '#78350F';
+
+const dotBounce = keyframes`
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30%            { transform: translateY(-5px); opacity: 1; }
+`;
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -55,335 +59,269 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onToggleAnnotations,
   onResendMessage,
 }) => {
-  const theme = useTheme();
   const [copySuccess, setCopySuccess] = useState(false);
 
-  // Handle copy to clipboard
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(message.text);
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {
-      console.error('Failed to copy text:', err);
+      console.error('Failed to copy:', err);
     }
   };
 
-  // Handle re-send message
   const handleResend = () => {
-    if (onResendMessage && message.text) {
-      onResendMessage(message.text);
-    }
+    if (onResendMessage && message.text) onResendMessage(message.text);
   };
+
+  const isUser      = message.sender === 'user';
+  const isAssistant = message.sender === 'assistant';
 
   return (
-    <Fade in={true} timeout={600}>
+    <Fade in timeout={300}>
       <Box
         sx={{
           display: 'flex',
           flexDirection: 'column',
-          alignSelf: message.sender === 'user' ? 'flex-end' : 'flex-start',
-          maxWidth: { 
-            xs: message.sender === 'user' ? '85%' : '100%',
-            sm: message.sender === 'user' ? '75%' : '98%'
-          },
-          width: message.sender === 'user' ? 'auto' : (message.sender === 'assistant' ? { xs: '100%', sm: '98%' } : 'auto'),
+          alignSelf: isUser ? 'flex-end' : 'flex-start',
+          maxWidth: { xs: isUser ? '85%' : '100%', sm: isUser ? '72%' : '98%' },
+          width: isUser ? 'auto' : { xs: '100%', sm: '98%' },
         }}
       >
-      <Card
-        variant={message.sender === 'user' ? 'outlined' : 'elevation'}
-        elevation={message.sender === 'user' ? 0 : 3}
-        sx={{
-          bgcolor: message.sender === 'user'
-            ? theme.palette.primary.main
-            : 'background.paper',
-          color: 'text.primary',
-          borderRadius: message.sender === 'user' ? 3 : 2,
-          border: message.sender === 'assistant'
-            ? `1px solid ${alpha(theme.palette.divider, 0.15)}`
-            : 'none',
-          boxShadow: message.sender === 'user'
-            ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.25)}`
-            : `0 1px 6px ${alpha(theme.palette.grey[500], 0.08)}`,
-          transition: 'box-shadow 0.2s ease',
-          '&:hover': {
-            boxShadow: message.sender === 'user'
-              ? `0 4px 16px ${alpha(theme.palette.primary.main, 0.35)}`
-              : `0 3px 16px ${alpha(theme.palette.grey[500], 0.14)}`,
-          },
-        }}
-      >
-        <CardContent sx={{ 
-          py: message.sender === 'user' ? 2 : 3, 
-          px: { xs: 2, sm: message.sender === 'user' ? 2 : 3 }, 
-          '&:last-child': { pb: message.sender === 'user' ? 2 : 3 } 
-        }}>
-          {/* Typing indicator — shown immediately while connecting, before any content arrives */}
-          {message.sender === 'assistant' &&
-           message.isStreaming &&
-           !message.text?.trim() &&
-           !message.thinkingTexts?.some(t => t.trim()) &&
-           !message.streamingStatus && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: '5px', py: 0.25 }}>
-              {[0, 1, 2].map(i => (
-                <Box
-                  key={i}
+        {/* ── Bubble ─────────────────────────────────────────── */}
+        <Box
+          sx={{
+            bgcolor: isUser ? BLUE : '#FFFFFF',
+            borderRadius: isUser ? '18px 18px 4px 18px' : '4px 18px 18px 18px',
+            border: isUser ? 'none' : `1px solid ${BORDER}`,
+            boxShadow: isUser
+              ? `0 2px 10px ${BLUE_SHD}`
+              : '0 1px 4px rgba(0,0,0,0.05)',
+            transition: 'box-shadow 0.2s ease',
+            '&:hover': {
+              boxShadow: isUser
+                ? '0 4px 16px rgba(37,99,235,0.36)'
+                : '0 2px 10px rgba(0,0,0,0.09)',
+            },
+          }}
+        >
+          <Box sx={{ py: isUser ? 1.5 : 2.25, px: { xs: 2, sm: isUser ? 2 : 2.5 } }}>
+
+            {/* Typing dots — before any content arrives */}
+            {isAssistant &&
+             message.isStreaming &&
+             !message.text?.trim() &&
+             !message.thinkingTexts?.some(t => t.trim()) &&
+             !message.streamingStatus && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: '5px', py: 0.5 }}>
+                {[0, 1, 2].map(i => (
+                  <Box
+                    key={i}
+                    sx={{
+                      width: 7, height: 7, borderRadius: '50%',
+                      bgcolor: '#94A3B8',
+                      animation: `${dotBounce} 1.2s ease-in-out infinite`,
+                      animationDelay: `${i * 0.18}s`,
+                    }}
+                  />
+                ))}
+              </Box>
+            )}
+
+            {/* Thinking steps */}
+            {isAssistant && (
+              <ThinkingSteps
+                messageId={message.id}
+                thinkingTexts={message.thinkingTexts}
+                thinkingSteps={message.thinkingSteps}
+                isStreaming={message.isStreaming}
+                streamingStatus={message.streamingStatus}
+                collapsed={collapsedThinking}
+                onToggle={onToggleThinking}
+              />
+            )}
+
+            {/* Charts */}
+            {isAssistant &&
+             message.charts &&
+             message.charts.length > 0 &&
+             message.status === 'sent' &&
+             !message.isStreaming && (
+              <ChartsSection
+                messageId={message.id}
+                charts={message.charts}
+                collapsed={collapsedCharts}
+                onToggle={onToggleCharts}
+              />
+            )}
+
+            {/* Slim progress bar — streaming with content visible */}
+            {message.status === 'thinking' &&
+             isAssistant &&
+             (message.text?.trim() || message.thinkingTexts?.some(t => t.trim()) || message.streamingStatus) && (
+              <Box sx={{ mb: 2 }}>
+                <LinearProgress
                   sx={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    bgcolor: 'text.disabled',
-                    animation: `${dotBounce} 1.2s ease-in-out infinite`,
-                    animationDelay: `${i * 0.18}s`,
+                    height: 2,
+                    borderRadius: 1,
+                    bgcolor: '#DBEAFE',
+                    '& .MuiLinearProgress-bar': { bgcolor: BLUE },
                   }}
                 />
-              ))}
-            </Box>
-          )}
+              </Box>
+            )}
 
-          {/* Assistant Thinking Steps */}
-          {message.sender === 'assistant' && (
-            <ThinkingSteps
-              messageId={message.id}
-              thinkingTexts={message.thinkingTexts}
-              thinkingSteps={message.thinkingSteps}
-              isStreaming={message.isStreaming}
-              streamingStatus={message.streamingStatus}
-              collapsed={collapsedThinking}
-              onToggle={onToggleThinking}
-            />
-          )}
-
-
-          {/* Charts Section - Only show when completed */}
-          {message.sender === 'assistant' && 
-           message.charts && 
-           message.charts.length > 0 && 
-           message.status === 'sent' && 
-           !message.isStreaming && (
-            <ChartsSection
-              messageId={message.id}
-              charts={message.charts}
-              collapsed={collapsedCharts}
-              onToggle={onToggleCharts}
-            />
-          )}
-
-          {/* Progress bar — shown while streaming AND some content is already visible */}
-          {message.status === 'thinking' &&
-           message.sender === 'assistant' &&
-           (message.text?.trim() || message.thinkingTexts?.some(t => t.trim()) || message.streamingStatus) && (
-            <Box sx={{ mb: 1.5 }}>
-              <LinearProgress
-                color="primary"
-                sx={{
-                  height: 2,
-                  borderRadius: 1,
-                  bgcolor: alpha(theme.palette.primary.main, 0.08),
-                }}
-              />
-            </Box>
-          )}
-
-          {/* Message Text Content */}
-          {message.sender === 'user' ? (
-            message.text && message.text.trim().length > 0 && (
-              <Box>
-                <Typography variant="body1" sx={{ 
-                  color: 'white',
-                  fontWeight: 500
-                }}>
+            {/* Message text */}
+            {isUser ? (
+              message.text?.trim() && (
+                <Typography
+                  sx={{
+                    color: '#FFFFFF',
+                    fontWeight: 500,
+                    fontSize: '0.9375rem',
+                    lineHeight: 1.65,
+                  }}
+                >
                   {message.text}
                 </Typography>
-              </Box>
-            )
-          ) : (
-            // Assistant message - render with markdown formatting
-            message.text && message.text.trim().length > 0 && (
-              <Box>
-                <MarkdownFormatter content={message.text} theme={theme} />
-                
-                {/* Annotations Section - Display at bottom of response text */}
-                {message.status === 'sent' && 
-                 !message.isStreaming && 
-                 message.annotations && 
-                 message.annotations.length > 0 && (
-                  <AnnotationsSection
-                    messageId={message.id}
-                    annotations={message.annotations}
-                    collapsed={collapsedAnnotations}
-                    onToggle={onToggleAnnotations}
-                  />
-                )}
-              </Box>
-            )
-          )}
-          
-          {/* Error */}
-          {message.status === 'error' && message.error && message.error.trim().length > 0 && (
-            <Box
-              sx={{
-                mt: 2,
-                py: 1.5,
-                px: 2,
-                backgroundColor: alpha('#ffc107', 0.08),
-                border: `1px solid ${alpha('#ffc107', 0.3)}`,
-                borderRadius: 1.5,
-                borderLeft: `4px solid ${alpha('#ffc107', 0.7)}`,
-              }}
-            >
-              {(() => {
-                // Split error message into parts
-                const errorLines = message.error.split('\n\n');
-                const header = errorLines[0]; // "PAWS right there! We have hit a snag :("
-                const rest = errorLines.slice(1).join('\n\n');
-                
-                return (
-                  <>
-                    {/* Error Header - Bigger and Centered, smaller on mobile */}
-                    <Typography 
-                      sx={{ 
-                        fontSize: { xs: '1.1rem', sm: '1.3rem', md: '1.5rem' },
-                        fontWeight: 700,
-                        color: theme.palette.mode === 'dark' ? '#fff' : '#000',
-                        textAlign: 'center',
-                        mb: rest ? 2 : 0
-                      }}
-                    >
-                      {header}
-                    </Typography>
-                    
-                    {/* Rest of the error message - smaller on mobile */}
-                    {rest && (
-                      <Typography 
-                        sx={{ 
-                          fontSize: { xs: '0.9rem', sm: '0.95rem', md: '1rem' },
-                          fontWeight: 500,
-                          color: theme.palette.mode === 'dark' ? '#fff' : '#000',
-                          whiteSpace: 'pre-wrap',
-                          lineHeight: 1.6
-                        }}
-                      >
-                        {rest}
-                      </Typography>
-                    )}
-                  </>
-                );
-              })()}
-            </Box>
-          )}
-        </CardContent>
-      </Card>
-      
-      {/* Action Buttons - Below the bubble */}
-      {/* For User Messages - Show copy and re-ask buttons */}
-      {message.sender === 'user' && message.text && message.text.trim().length > 0 && (
-        <Stack 
-          direction="row" 
-          spacing={0.5} 
-          sx={{ 
-            mt: 0.5,
-            justifyContent: 'flex-end',
-            opacity: 0.7,
-            '&:hover': { opacity: 1 },
-            transition: 'opacity 0.2s'
-          }}
-        >
-          {/* Copy Button */}
-          <Tooltip 
-            title={copySuccess ? MESSAGE_LABELS.COPY_SUCCESS : MESSAGE_LABELS.COPY_USER_MESSAGE_TOOLTIP}
-            arrow
-          >
-            <IconButton
-              onClick={handleCopy}
-              size="small"
-              sx={{
-                color: 'text.secondary',
-                padding: '4px',
-                '&:hover': {
-                  color: 'primary.main',
-                  backgroundColor: alpha(theme.palette.primary.main, 0.1)
-                }
-              }}
-            >
-              <CopyIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
+              )
+            ) : (
+              message.text?.trim() && (
+                <Box>
+                  <MarkdownFormatter content={message.text} />
+                  {message.status === 'sent' &&
+                   !message.isStreaming &&
+                   message.annotations &&
+                   message.annotations.length > 0 && (
+                    <AnnotationsSection
+                      messageId={message.id}
+                      annotations={message.annotations}
+                      collapsed={collapsedAnnotations}
+                      onToggle={onToggleAnnotations}
+                    />
+                  )}
+                </Box>
+              )
+            )}
 
-          {/* Re-ask Button */}
-          {onResendMessage && (
-            <Tooltip title={MESSAGE_LABELS.RESEND_MESSAGE_TOOLTIP} arrow>
-              <IconButton
-                onClick={handleResend}
-                size="small"
+            {/* Error */}
+            {message.status === 'error' && message.error?.trim() && (
+              <Box
                 sx={{
-                  color: 'text.secondary',
-                  padding: '4px',
-                  '&:hover': {
-                    color: 'primary.main',
-                    backgroundColor: alpha(theme.palette.primary.main, 0.1)
-                  }
+                  mt: 1.5, py: 1.5, px: 2,
+                  bgcolor: AMBER_BG,
+                  border: `1px solid ${AMBER_BD}`,
+                  borderLeft: `4px solid ${AMBER_LB}`,
+                  borderRadius: 1.5,
                 }}
               >
-                <ReplayIcon sx={{ fontSize: 18 }} />
-              </IconButton>
-            </Tooltip>
-          )}
-        </Stack>
-      )}
+                {(() => {
+                  const parts = message.error.split('\n\n');
+                  const header = parts[0];
+                  const rest   = parts.slice(1).join('\n\n');
+                  return (
+                    <>
+                      <Typography
+                        sx={{
+                          fontSize: { xs: '1rem', sm: '1.15rem' },
+                          fontWeight: 700,
+                          color: AMBER_H,
+                          textAlign: 'center',
+                          mb: rest ? 1.5 : 0,
+                        }}
+                      >
+                        {header}
+                      </Typography>
+                      {rest && (
+                        <Typography
+                          sx={{
+                            fontSize: { xs: '0.875rem', sm: '0.9375rem' },
+                            color: AMBER_B,
+                            whiteSpace: 'pre-wrap',
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          {rest}
+                        </Typography>
+                      )}
+                    </>
+                  );
+                })()}
+              </Box>
+            )}
 
-      {/* For Assistant Messages - Show disclaimer and copy button only when complete */}
-      {message.sender === 'assistant' && message.status === 'sent' && !message.isStreaming && message.text && message.text.trim().length > 0 && (
-        <Stack 
-          direction="row" 
-          spacing={1} 
-          sx={{ 
-            mt: 0.5,
-            justifyContent: 'center',
-            alignItems: 'center',
-            opacity: 0.7,
-            '&:hover': { opacity: 1 },
-            transition: 'opacity 0.2s'
-          }}
-        >
-          {/* Disclaimer - Hidden on mobile */}
-          <Typography 
-            variant="caption" 
-            color="text.secondary" 
-            sx={{ 
-              display: { xs: 'none', sm: 'block' },
-              fontSize: '0.8rem',
-              textAlign: 'center'
+          </Box>
+        </Box>
+
+        {/* ── User action row ─────────────────────────────────── */}
+        {isUser && message.text?.trim() && (
+          <Stack
+            direction="row"
+            spacing={0.5}
+            sx={{
+              mt: 0.5,
+              justifyContent: 'flex-end',
+              opacity: 0.55,
+              '&:hover': { opacity: 1 },
+              transition: 'opacity 0.2s',
             }}
           >
-            {MESSAGE_LABELS.DISCLAIMER}
-          </Typography>
+            <Tooltip title={copySuccess ? MESSAGE_LABELS.COPY_SUCCESS : MESSAGE_LABELS.COPY_USER_MESSAGE_TOOLTIP} arrow>
+              <IconButton
+                onClick={handleCopy}
+                size="small"
+                sx={{ color: TEXT2, p: '4px', borderRadius: '6px', '&:hover': { color: BLUE, bgcolor: BLUE_BG } }}
+              >
+                <CopyIcon sx={{ fontSize: 15 }} />
+              </IconButton>
+            </Tooltip>
+            {onResendMessage && (
+              <Tooltip title={MESSAGE_LABELS.RESEND_MESSAGE_TOOLTIP} arrow>
+                <IconButton
+                  onClick={handleResend}
+                  size="small"
+                  sx={{ color: TEXT2, p: '4px', borderRadius: '6px', '&:hover': { color: BLUE, bgcolor: BLUE_BG } }}
+                >
+                  <ReplayIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Tooltip>
+            )}
+          </Stack>
+        )}
 
-          {/* Copy Button */}
-          <Tooltip 
-            title={copySuccess ? MESSAGE_LABELS.COPY_SUCCESS : MESSAGE_LABELS.COPY_ASSISTANT_MESSAGE_TOOLTIP}
-            arrow
+        {/* ── Assistant action row ────────────────────────────── */}
+        {isAssistant &&
+         message.status === 'sent' &&
+         !message.isStreaming &&
+         message.text?.trim() && (
+          <Stack
+            direction="row"
+            spacing={1}
+            sx={{
+              mt: 0.5,
+              justifyContent: 'center',
+              alignItems: 'center',
+              opacity: 0.55,
+              '&:hover': { opacity: 1 },
+              transition: 'opacity 0.2s',
+            }}
           >
-            <IconButton
-              onClick={handleCopy}
-              size="small"
-              sx={{
-                color: 'text.secondary',
-                padding: '4px',
-                '&:hover': {
-                  color: 'primary.main',
-                  backgroundColor: alpha(theme.palette.primary.main, 0.1)
-                }
-              }}
-            >
-              <CopyIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
-        </Stack>
-      )}
+            <Typography sx={{ display: { xs: 'none', sm: 'block' }, fontSize: '0.75rem', color: TEXT2 }}>
+              {MESSAGE_LABELS.DISCLAIMER}
+            </Typography>
+            <Tooltip title={copySuccess ? MESSAGE_LABELS.COPY_SUCCESS : MESSAGE_LABELS.COPY_ASSISTANT_MESSAGE_TOOLTIP} arrow>
+              <IconButton
+                onClick={handleCopy}
+                size="small"
+                sx={{ color: TEXT2, p: '4px', borderRadius: '6px', '&:hover': { color: BLUE, bgcolor: BLUE_BG } }}
+              >
+                <CopyIcon sx={{ fontSize: 15 }} />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        )}
       </Box>
     </Fade>
   );
 };
-
-
