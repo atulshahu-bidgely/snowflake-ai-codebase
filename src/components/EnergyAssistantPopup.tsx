@@ -9,8 +9,6 @@ import {
   Divider,
   Fab,
   Zoom,
-  Menu,
-  MenuItem,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -23,7 +21,6 @@ import {
   ArrowBack as BackIcon,
   ChevronRight as ArrowIcon,
   Stop as StopIcon,
-  ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { useChatMessages } from '../hooks/useChatMessages';
@@ -35,16 +32,14 @@ const GRADIENT = 'linear-gradient(135deg, #0f4184 0%, #1e62c1 28%, #94207b 55%, 
 const BLUE     = '#0c6ae9';
 const RED      = '#e4194b';
 
-type PromptMode = 'data' | 'analysis' | 'targeting';
-
-const CATEGORIES: { Icon: typeof SearchIcon; label: string; description: string; color: string; bg: string; mode: PromptMode; questions: string[] }[] = [
+const CATEGORIES = [
   {
     Icon: SearchIcon,
     label: 'Get Data',
     description: 'Pull metrics, counts, and account lists from your energy data',
     color: '#2563EB',
     bg: '#EFF6FF',
-    mode: 'data',
+    isAnalysis: false,
     questions: [
       'How many EVs are there in the region?',
       'How many users are enrolled in the Cooling DR Program?',
@@ -58,7 +53,7 @@ const CATEGORIES: { Icon: typeof SearchIcon; label: string; description: string;
     description: 'Explore consumption patterns, trends, and segment behaviour',
     color: '#7C3AED',
     bg: '#F5F3FF',
-    mode: 'analysis',
+    isAnalysis: true,
     questions: [
       'How has the EV ownership trend changed across the region?',
       'Which time period has the most frequent EV Charging?',
@@ -71,8 +66,9 @@ const CATEGORIES: { Icon: typeof SearchIcon; label: string; description: string;
     description: 'Find eligible accounts for programs, rebates, or rate plans',
     color: '#059669',
     bg: '#ECFDF5',
-    mode: 'targeting',
-    questions: [
+    isAnalysis: false,
+    isTarget: true,
+   questions: [
       'Target users with inefficient cooling and heating for weatherisation',
       'Find 3,000 customers for a heatpump rebate with least efficient heating',
       'Top 5 grid assets with high EV charging utilization in peak periods',
@@ -80,12 +76,22 @@ const CATEGORIES: { Icon: typeof SearchIcon; label: string; description: string;
   },
 ];
 
-const buildPrompt = (text: string, mode: PromptMode): string => {
-  if (mode === 'analysis') {
-    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights.`;
+const buildPrompt = (text: string, isAnalysis: boolean, isTarget: boolean = false): string => {
+  if (isTarget) {
+    const numberMatch = text.match(/\b([1-9]\d{0,2}(?:,\d{3})*|\d+)\b/);
+    const tableLimit  = numberMatch ? parseInt(numberMatch[1].replace(/,/g, ''), 10) : 15;
+    return `${text}\n\nIMPORTANT: This is a program targeting question. Provide detailed insights with trends, patterns, and key observations from the data.
+Return:
+1. A detailed analytical summary with trends and insights.
+2. A chart or visualization summarising the result distribution (e.g. by ZIP code, efficiency tier, income band, or other relevant grouping). Show a maximum of 10 data points in the chart — use the top 10 groups by count or value so the chart stays readable.
+3. A markdown table of the top ${tableLimit} most relevant matching records — this table will be downloaded as a CSV by the field team.
+   - Every row must contain real customer/account data values (actual IDs, ZIP codes, metric values, categories, scores).
+   - Do NOT describe columns — return actual data rows only.
+   - Choose the most relevant columns dynamically based on the question.
+Do not show sources.`;
   }
-  if (mode === 'targeting') {
-    return `${text}\n\nIMPORTANT: This is a program targeting request. Identify all eligible customers and return a comprehensive markdown table listing each one. Include relevant attributes such as premise ID, ZIP code, usage metrics, appliance efficiency ratings, income group, and any other qualifying criteria. After the table provide a brief summary with the total eligible count and key insights.`;
+  if (isAnalysis) {
+    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights. Do not show sources.`;
   }
   return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
 };
@@ -106,17 +112,10 @@ export const EnergyAssistantPopup: React.FC = () => {
       .map(([id, cfg]) => ({ id, displayName: cfg.displayName }));
   }, [agentConfig]);
 
-  const [selectedAgent, setSelectedAgent]     = useState<string>('');
-  const [goalMenuAnchor, setGoalMenuAnchor]   = useState<null | HTMLElement>(null);
-
+  const [selectedAgent, setSelectedAgent] = useState<string>('');
   useEffect(() => {
     if (agentList.length > 0 && !selectedAgent) setSelectedAgent(agentList[0].id);
   }, [agentList, selectedAgent]);
-
-  const agentStarterQuestions = useMemo(() => {
-    if (!agentConfig || !selectedAgent) return [];
-    return agentConfig.agents[selectedAgent]?.starterQuestions ?? [];
-  }, [agentConfig, selectedAgent]);
 
   const { messages, isLoading, sendMessage, cancelRequest, clearMessages } =
     useChatMessages(selectedAgent);
@@ -153,26 +152,19 @@ export const EnergyAssistantPopup: React.FC = () => {
     [messages]
   );
 
-  const lastMessageComplete = useMemo(() => {
-    const last = visibleMessages[visibleMessages.length - 1];
-    return last?.sender === 'assistant' && last?.status === 'sent' && !last?.isStreaming;
-  }, [visibleMessages]);
-
-  const currentMode: PromptMode = selectedCategory !== null
-    ? CATEGORIES[selectedCategory].mode
-    : 'data';
+  const isAnalysis = selectedCategory !== null ? CATEGORIES[selectedCategory].isAnalysis : false;
+  const isTarget   = selectedCategory !== null ? (CATEGORIES[selectedCategory] as any).isTarget ?? false : false;
 
   const handleSubmit = useCallback(() => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
     const display = inputText.trim();
-    const mode: PromptMode = selectedCategory !== null ? CATEGORIES[selectedCategory].mode : 'data';
-    sendMessage(buildPrompt(display, mode), display);
+    sendMessage(buildPrompt(display, isAnalysis, isTarget), display, isTarget);
     setInputText('');
-  }, [inputText, isLoading, sendMessage, cancelRequest, selectedCategory]);
+  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis, isTarget]);
 
-  const handleQuestionClick = useCallback((text: string, mode: PromptMode) => {
-    sendMessage(buildPrompt(text, mode), text);
+  const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean, catIsTarget: boolean = false) => {
+    sendMessage(buildPrompt(text, catIsAnalysis, catIsTarget), text, catIsTarget);
   }, [sendMessage]);
 
   const handleCategoryClick = useCallback((index: number) => {
@@ -256,75 +248,6 @@ export const EnergyAssistantPopup: React.FC = () => {
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-
-            {/* Goal switcher — only visible in chat state */}
-            {visibleMessages.length > 0 && <>
-              <Box
-                component="button"
-                onClick={e => !isLoading && setGoalMenuAnchor(e.currentTarget as HTMLElement)}
-                sx={{
-                  display: 'flex', alignItems: 'center', gap: '5px',
-                  cursor: isLoading ? 'not-allowed' : 'pointer',
-                  border: '1px solid #e8eaed', borderRadius: '7px',
-                  bgcolor: selectedCategory !== null ? `${CATEGORIES[selectedCategory].color}08` : 'transparent',
-                  borderColor: selectedCategory !== null ? `${CATEGORIES[selectedCategory].color}40` : '#e8eaed',
-                  px: '10px', py: '5px',
-                  opacity: isLoading ? 0.45 : 1,
-                  transition: 'all 0.15s',
-                  '&:hover': isLoading ? {} : { bgcolor: '#f4f6f9', borderColor: '#d0d4db' },
-                }}
-              >
-                {(() => {
-                  if (selectedCategory === null) return <SparkleIcon sx={{ fontSize: 13, color: '#aaa', flexShrink: 0 }} />;
-                  const CatIcon = CATEGORIES[selectedCategory].Icon;
-                  return <CatIcon sx={{ fontSize: 13, color: CATEGORIES[selectedCategory].color, flexShrink: 0 }} />;
-                })()}
-                <Typography sx={{
-                  fontSize: 13, fontFamily: FONT, fontWeight: 500, whiteSpace: 'nowrap',
-                  color: selectedCategory !== null ? CATEGORIES[selectedCategory].color : '#888',
-                }}>
-                  {selectedCategory !== null ? CATEGORIES[selectedCategory].label : 'Choose a goal'}
-                </Typography>
-                <ExpandMoreIcon sx={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
-              </Box>
-              <Menu
-                anchorEl={goalMenuAnchor}
-                open={Boolean(goalMenuAnchor)}
-                onClose={() => setGoalMenuAnchor(null)}
-                slotProps={{ paper: { sx: { mt: '6px', minWidth: 210, borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.12)', border: '1px solid #e8eaed', p: '4px', bgcolor: '#ffffff', color: '#1a1d23' } } }}
-              >
-                {CATEGORIES.map((cat, ci) => (
-                  <MenuItem
-                    key={ci}
-                    selected={ci === selectedCategory}
-                    onClick={() => { setSelectedCategory(ci); setGoalMenuAnchor(null); }}
-                    sx={{
-                      display: 'flex', alignItems: 'center', gap: '10px',
-                      fontSize: 13, fontFamily: FONT, borderRadius: '7px', py: '8px',
-                      '&.Mui-selected': { bgcolor: `${cat.color}0f` },
-                      '&.Mui-selected:hover': { bgcolor: `${cat.color}18` },
-                    }}
-                  >
-                    <Box sx={{
-                      width: 26, height: 26, borderRadius: '7px', bgcolor: cat.bg,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                      <cat.Icon sx={{ fontSize: 14, color: cat.color }} />
-                    </Box>
-                    <Box>
-                      <Typography sx={{ fontSize: 13, fontWeight: ci === selectedCategory ? 600 : 500, color: ci === selectedCategory ? cat.color : '#1a1d23', fontFamily: FONT }}>
-                        {cat.label}
-                      </Typography>
-                      <Typography sx={{ fontSize: 11, color: '#94a3b8', fontFamily: FONT, lineHeight: 1.3 }}>
-                        {cat.description}
-                      </Typography>
-                    </Box>
-                  </MenuItem>
-                ))}
-              </Menu>
-              <Divider orientation="vertical" flexItem sx={{ height: 18, alignSelf: 'center' }} />
-            </>}
-
             <Box
               component="button"
               onClick={handleNewChat}
@@ -475,7 +398,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                           {cat.description}
                         </Typography>
 
-                        {/* Question count badge */}
+                        {/* Question count / open-ended badge */}
                         <Box sx={{
                           display: 'inline-flex', alignItems: 'center',
                           mt: '14px', px: '8px', py: '3px',
@@ -487,7 +410,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                             fontSize: 11, fontWeight: 600, color: cat.color,
                             fontFamily: FONT, letterSpacing: '0.01em',
                           }}>
-                            {cat.questions.length} suggested questions
+                            {cat.questions.length > 0 ? `${cat.questions.length} suggested questions` : 'Open-ended — ask anything'}
                           </Typography>
                         </Box>
                       </Box>
@@ -533,13 +456,13 @@ export const EnergyAssistantPopup: React.FC = () => {
                       </Typography>
                     </Box>
 
-                    {/* Question list */}
+                    {/* Question list — hidden for open-ended categories */}
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {activeCat.questions.map((q, qi) => (
                         <Box
                           key={qi}
                           component="button"
-                          onClick={() => handleQuestionClick(q, activeCat.mode)}
+                          onClick={() => handleQuestionClick(q, activeCat.isAnalysis, (activeCat as any).isTarget ?? false)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '12px',
                             px: '18px', py: '14px',
@@ -627,47 +550,10 @@ export const EnergyAssistantPopup: React.FC = () => {
                       onToggleThinking={thinkingAccordion.toggle}
                       onToggleCharts={chartsAccordion.toggle}
                       onToggleAnnotations={annotationsAccordion.toggle}
-                      onResendMessage={sendMessage}
+                      onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget)}
                     />
                   ))}
                 </Stack>
-
-                {/* Follow-up chips from agent's starter questions */}
-                {lastMessageComplete && agentStarterQuestions.length > 0 && (
-                  <Box sx={{ mt: 3, mb: 1 }}>
-                    <Typography sx={{
-                      fontSize: 10.5, fontWeight: 700, color: '#b0b8c8',
-                      fontFamily: FONT, mb: 1.5, pl: '2px',
-                      letterSpacing: '0.06em', textTransform: 'uppercase',
-                    }}>
-                      Try asking
-                    </Typography>
-                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                      {agentStarterQuestions.slice(0, 4).map((q, i) => (
-                        <Box
-                          key={i}
-                          component="button"
-                          onClick={() => handleQuestionClick(q, currentMode)}
-                          sx={{
-                            display: 'flex', alignItems: 'center', gap: '6px',
-                            px: '12px', py: '7px',
-                            bgcolor: 'white',
-                            border: `1.5px solid ${BLUE}28`,
-                            borderRadius: '20px',
-                            cursor: 'pointer',
-                            fontFamily: FONT, fontSize: 12.5, color: '#2a2e3a',
-                            transition: 'all 0.15s',
-                            '&:hover': { bgcolor: `${BLUE}08`, borderColor: `${BLUE}60`, color: BLUE },
-                          }}
-                        >
-                          <SparkleIcon sx={{ fontSize: 11, color: BLUE, flexShrink: 0 }} />
-                          {q}
-                        </Box>
-                      ))}
-                    </Box>
-                  </Box>
-                )}
-
                 <div ref={messagesEndRef} />
               </Box>
 
