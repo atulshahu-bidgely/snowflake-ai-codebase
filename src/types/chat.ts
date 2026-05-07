@@ -51,6 +51,7 @@ export interface ChatMessage {
     contentIndex?: number;
   }>;
   toolsUsed?: string[];
+  isTarget?: boolean;
 }
 
 export interface AccordionState {
