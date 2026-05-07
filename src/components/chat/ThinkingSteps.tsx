@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import { ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import { CHAT_TEXT } from '../../constants/textConstants';
-import { splitThinkingTextIntoParagraphs } from '../../utils/chatUtils';
+import { extractThinkingPreview } from '../../utils/chatUtils';
 
 // explicit tokens — no theme inheritance
 const BG     = '#EFF6FF';  // Blue-50
@@ -38,6 +38,8 @@ export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
   collapsed,
   onToggle,
 }) => {
+  const previewParagraphs = useMemo(() => extractThinkingPreview(thinkingTexts), [thinkingTexts]);
+
   if (!isStreaming && !thinkingTexts.length && !thinkingSteps.length) {
     return null;
   }
@@ -94,28 +96,24 @@ export const ThinkingSteps: React.FC<ThinkingStepsProps> = ({
 
         {/* Content */}
         <AccordionDetails sx={{ px: 2, pt: 0, pb: 1.5, background: 'transparent' }}>
-          {thinkingTexts.length > 0 && thinkingTexts.some(t => t.trim()) && (
+          {previewParagraphs.length > 0 && (
             <Box sx={{ borderLeft: `2px solid ${RULE}`, pl: 1.5 }}>
-              {thinkingTexts
-                .filter(t => t.trim())
-                .flatMap((text, ti) =>
-                  splitThinkingTextIntoParagraphs(text).map((para, pi) => (
-                    <Typography
-                      key={`${ti}-${pi}`}
-                      sx={{
-                        fontSize: '0.8125rem',
-                        lineHeight: 1.65,
-                        color: TEXT,
-                        fontStyle: 'italic',
-                        mb: 0.75,
-                        '&:last-child': { mb: 0 },
-                        wordBreak: 'break-word',
-                      }}
-                    >
-                      {para}
-                    </Typography>
-                  ))
-                )}
+              {previewParagraphs.map((para: string, i: number) => (
+                <Typography
+                  key={i}
+                  sx={{
+                    fontSize: '0.8125rem',
+                    lineHeight: 1.65,
+                    color: TEXT,
+                    fontStyle: 'italic',
+                    mb: 0.75,
+                    '&:last-child': { mb: 0 },
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {para}
+                </Typography>
+              ))}
             </Box>
           )}
 

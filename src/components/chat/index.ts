@@ -4,6 +4,7 @@
  */
 
 export { ChatHeader } from './ChatHeader';
+export { CsvSection } from './CsvSection';
 export { ChatInput } from './ChatInput';
 export { ChatMessage } from './ChatMessage';
 export { ChartsSection } from './ChartsSection';

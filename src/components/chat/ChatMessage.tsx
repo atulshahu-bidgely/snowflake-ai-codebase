@@ -18,7 +18,9 @@ import { ThinkingSteps } from './ThinkingSteps';
 import { ChartsSection } from './ChartsSection';
 import { AnnotationsSection } from './AnnotationsSection';
 import { MarkdownFormatter } from './MarkdownFormatter';
+import { CsvSection } from './CsvSection';
 import { MESSAGE_LABELS } from '../../constants/textConstants';
+import { parseMarkdownTable, extractTotalCount } from '../../utils/chatUtils';
 
 // explicit tokens — no MUI theme inheritance
 const BLUE     = '#2563EB';
@@ -190,6 +192,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               message.text?.trim() && (
                 <Box>
                   <MarkdownFormatter content={message.text} />
+                  {message.isTarget && message.status === 'sent' && !message.isStreaming && (() => {
+                    const table = parseMarkdownTable(message.text);
+                    if (!table) return null;
+                    const totalCount = extractTotalCount(message.text);
+                    return (
+                      <CsvSection
+                        headers={table.headers}
+                        rows={table.rows}
+                        totalCount={totalCount && totalCount > table.rows.length ? totalCount : undefined}
+                      />
+                    );
+                  })()}
                   {message.status === 'sent' &&
                    !message.isStreaming &&
                    message.annotations &&
