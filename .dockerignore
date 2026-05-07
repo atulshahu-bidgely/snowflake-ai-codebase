@@ -1,8 +1,9 @@
 node_modules
 build
 .env
-.env.*
+.env.local
+.env.*.local
+npm-debug.log*
+.DS_Store
 .git
 .gitignore
-*.log
-npm-debug.log*
