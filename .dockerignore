@@ -7,3 +7,8 @@ npm-debug.log*
 .DS_Store
 .git
 .gitignore
+spcs/
+README.md
+LICENSE
+env.backend.example
+env.frontend.example
