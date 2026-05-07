@@ -488,15 +488,21 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
   }
 });
 
-/**
- * Catch-all for undefined routes
- */
-app.use((req, res) => {
-  res.status(HTTP_STATUS.NOT_FOUND).json({ 
-    error: 'Not found',
-    message: 'The requested endpoint does not exist'
+// Serve React static files in production
+if (process.env.NODE_ENV === 'production') {
+  const buildPath = path.join(__dirname, '../build');
+  app.use(express.static(buildPath));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(buildPath, 'index.html'));
   });
-});
+} else {
+  app.use((req, res) => {
+    res.status(HTTP_STATUS.NOT_FOUND).json({
+      error: 'Not found',
+      message: 'The requested endpoint does not exist'
+    });
+  });
+}
 
 /**
  * Global error handler
