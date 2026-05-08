@@ -72,65 +72,98 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         if (mark === 'line' && data.length > 0) {
           const firstItem = data[0];
           const keys = Object.keys(firstItem);
-          
-          // Check if this looks like multi-series data that needs pivoting
-          const categoryField = keys.find(key => 
-            key.toUpperCase() === 'CATEGORY' || 
-            key.toLowerCase().includes('category') || 
-            key.toLowerCase().includes('group') ||
-            key.toLowerCase().includes('series')
-          );
-          
-          const timeField = keys.find(key => 
-            key.toLowerCase().includes('month') ||
-            key.toLowerCase().includes('date') ||
-            key.toLowerCase().includes('time') ||
-            key.toLowerCase().includes('year') ||
-            key.toLowerCase().includes('day') ||
-            key.toLowerCase().includes('quarter') ||
-            key.toLowerCase().includes('week') ||
-            (typeof firstItem[key] === 'string' && (
-              firstItem[key].includes('-') || 
-              firstItem[key].includes('/') ||
-              firstItem[key].match(/^\d{4}$/) // Year format
-            ))
-          );
-          
-          const valueField = keys.find(key => 
-            key.toLowerCase().includes('sales') ||
-            key.toLowerCase().includes('value') ||
-            key.toLowerCase().includes('amount') ||
-            key.toLowerCase().includes('revenue') ||
-            key.toLowerCase().includes('price') ||
-            key.toLowerCase().includes('cost') ||
-            key.toLowerCase().includes('total') ||
-            key.toLowerCase().includes('count') ||
-            key.toLowerCase().includes('quantity') ||
-            key.toLowerCase().includes('score') ||
-            key.toLowerCase().includes('rating') ||
-            key.toLowerCase().includes('percent') ||
-            (key !== categoryField && key !== timeField && typeof firstItem[key] === 'number')
-          );
+
+          // Read Vega-Lite encoding hints — these are authoritative when present
+          const encodingColorField = vegaSpec.encoding?.color?.field;
+          const encodingXField = vegaSpec.encoding?.x?.field;
+          const encodingYField = vegaSpec.encoding?.y?.field;
+
+          // Detect category/series field (e.g. ZIP, region, product)
+          const categoryField =
+            (encodingColorField && keys.includes(encodingColorField) ? encodingColorField : null) ||
+            keys.find(key =>
+              key.toUpperCase() === 'CATEGORY' ||
+              key.toLowerCase().includes('category') ||
+              key.toLowerCase().includes('group') ||
+              key.toLowerCase().includes('series') ||
+              key.toLowerCase() === 'zip' ||
+              key.toLowerCase().includes('zip_code') ||
+              key.toLowerCase().includes('zipcode') ||
+              key.toLowerCase().includes('postal') ||
+              key.toLowerCase().includes('region') ||
+              key.toLowerCase().includes('segment') ||
+              key.toLowerCase().includes('district') ||
+              key.toLowerCase().includes('territory') ||
+              // Numeric values that look like ZIP codes (5-digit integers 10000-99999)
+              (typeof firstItem[key] === 'number' &&
+                firstItem[key] >= 10000 && firstItem[key] <= 99999 &&
+                Number.isInteger(firstItem[key]))
+            );
+
+          // Detect time/X field
+          const timeField =
+            (encodingXField && keys.includes(encodingXField) && encodingXField !== categoryField
+              ? encodingXField
+              : null) ||
+            keys.find(key =>
+              key !== categoryField &&
+              (key.toLowerCase().includes('month') ||
+                key.toLowerCase().includes('date') ||
+                key.toLowerCase().includes('time') ||
+                key.toLowerCase().includes('year') ||
+                key.toLowerCase().includes('day') ||
+                key.toLowerCase().includes('quarter') ||
+                key.toLowerCase().includes('week') ||
+                (typeof firstItem[key] === 'string' && (
+                  firstItem[key].includes('-') ||
+                  firstItem[key].includes('/') ||
+                  firstItem[key].match(/^\d{4}$/)
+                )))
+            );
+
+          // Detect value/Y field
+          const valueField =
+            (encodingYField && keys.includes(encodingYField) &&
+              encodingYField !== categoryField && encodingYField !== timeField
+              ? encodingYField
+              : null) ||
+            keys.find(key =>
+              key !== categoryField &&
+              key !== timeField &&
+              (key.toLowerCase().includes('sales') ||
+                key.toLowerCase().includes('value') ||
+                key.toLowerCase().includes('amount') ||
+                key.toLowerCase().includes('revenue') ||
+                key.toLowerCase().includes('price') ||
+                key.toLowerCase().includes('cost') ||
+                key.toLowerCase().includes('total') ||
+                key.toLowerCase().includes('count') ||
+                key.toLowerCase().includes('quantity') ||
+                key.toLowerCase().includes('score') ||
+                key.toLowerCase().includes('rating') ||
+                key.toLowerCase().includes('percent') ||
+                typeof firstItem[key] === 'number')
+            );
 
           if (categoryField && timeField && valueField) {
             // Pivot the data from long to wide format
             const pivotMap = new Map();
-            
+
             data.forEach((row: any) => {
               const timeKey = row[timeField];
               const category = row[categoryField];
               const value = parseFloat(row[valueField]) || 0;
-              
+
               if (!pivotMap.has(timeKey)) {
-                pivotMap.set(timeKey, { 
+                pivotMap.set(timeKey, {
                   name: timeKey,
                   [timeField]: timeKey
                 });
               }
-              
+
               pivotMap.get(timeKey)[category] = value;
             });
-            
+
             transformedData = Array.from(pivotMap.values());
           }
         }
@@ -293,7 +326,13 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       /_key$/i,
       // Exclude count_distinct but not other aggregates that might be data
       /count_distinct/i,
-      /COUNT_DISTINCT/i
+      /COUNT_DISTINCT/i,
+      // Exclude geographic/categorical identifier fields that are numeric-looking
+      /^zip$/i,
+      /zip_code/i,
+      /zipcode/i,
+      /^postal$/i,
+      /postal_code/i
     ];
 
     yKeys = yKeys.filter(key => {
@@ -732,7 +771,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'scatter':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <ScatterChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }}>
+            <ScatterChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
@@ -782,7 +821,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         // Default to bar chart for unknown types
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }}>
+            <BarChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}

@@ -36,11 +36,12 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({
   return (
     <Box
       sx={{
+        mt: 2,
         mb: 2,
         borderRadius: '10px',
         border: `1px solid ${BLUE_BD}`,
         bgcolor: BLUE_BG,
-        overflow: 'hidden',
+        overflow: 'visible',
       }}
     >
       <Accordion
