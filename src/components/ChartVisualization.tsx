@@ -383,35 +383,72 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     return data;
   }, [data, chartConfig]);
 
+  // When there are more than 20 X entries, limit the chart to the top 15 by value.
+  // The table still shows all rows. Re-sort the slice to preserve natural X order.
+  const CHART_ENTRY_LIMIT = 20;
+  const CHART_DISPLAY_COUNT = 15;
+  const displayData = useMemo(() => {
+    const { xKey, yKeys } = chartConfig;
+    if (!sortedData || sortedData.length <= CHART_ENTRY_LIMIT) return sortedData;
+
+    // Score each row by sum of all yKey values
+    const scored = sortedData.map(row => ({
+      row,
+      score: yKeys.reduce((sum, key) => {
+        const v = row[key];
+        return sum + (typeof v === 'number' ? v : 0);
+      }, 0)
+    }));
+
+    const top = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, CHART_DISPLAY_COUNT)
+      .map(s => s.row);
+
+    // Re-sort the slice by xKey to keep the chart axis in natural order
+    const sample = top[0]?.[xKey];
+    if (typeof sample === 'string' && (/^\d{4}-\d{2}/.test(sample) || /^\d{4}$/.test(sample))) {
+      return top.sort((a, b) => String(a[xKey] ?? '').localeCompare(String(b[xKey] ?? '')));
+    }
+    if (typeof sample === 'number') {
+      return top.sort((a, b) => (a[xKey] as number) - (b[xKey] as number));
+    }
+    // Categorical (ZIP, names) — keep value-desc order so highest bars are leftmost
+    return top;
+  }, [sortedData, chartConfig]);
+
+  const isTrimmed = sortedData.length > CHART_ENTRY_LIMIT;
+  const totalEntries = sortedData.length;
+
   const isMultiSeries = chartConfig.yKeys.length > 1;
   const tabs = isMultiSeries ? ['Trend', 'Compare', 'Table'] : ['Chart', 'Table'];
 
-  // Peak value per series (for Trend annotations)
+  // Peak value per series (for Trend annotations) — computed on displayData
   const peaks = useMemo(() => {
     const { xKey, yKeys } = chartConfig;
-    if (!sortedData || sortedData.length === 0 || !isMultiSeries) return [];
+    if (!displayData || displayData.length === 0 || !isMultiSeries) return [];
     return yKeys.map((key, i) => {
       let maxVal = -Infinity;
       let maxX: any = null;
-      sortedData.forEach(row => {
+      displayData.forEach(row => {
         const v = typeof row[key] === 'number' ? (row[key] as number) : NaN;
         if (!isNaN(v) && v > maxVal) { maxVal = v; maxX = row[xKey]; }
       });
       return { key, maxVal, maxX, color: CHART_COLORS[i % CHART_COLORS.length] };
     }).filter(p => p.maxX !== null);
-  }, [sortedData, chartConfig, isMultiSeries]);
+  }, [displayData, chartConfig, isMultiSeries]);
 
   // Key insights for multi-series data
   const insights = useMemo(() => {
     const { xKey, yKeys } = chartConfig;
-    if (!sortedData || sortedData.length < 2 || yKeys.length < 1) return null;
+    if (!displayData || displayData.length < 2 || yKeys.length < 1) return null;
 
     // Highest single value
     let highestVal = -Infinity;
     let highestKey = '';
     let highestX: any = null;
     yKeys.forEach(key => {
-      sortedData.forEach(row => {
+      displayData.forEach(row => {
         const v = row[key] as number;
         if (typeof v === 'number' && v > highestVal) { highestVal = v; highestKey = key; highestX = row[xKey]; }
       });
@@ -423,11 +460,11 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     let fastestFromX: any = null;
     let fastestToX: any = null;
     yKeys.forEach(key => {
-      for (let i = 0; i < sortedData.length - 1; i++) {
-        const diff = (sortedData[i + 1][key] as number) - (sortedData[i][key] as number);
+      for (let i = 0; i < displayData.length - 1; i++) {
+        const diff = (displayData[i + 1][key] as number) - (displayData[i][key] as number);
         if (typeof diff === 'number' && diff > fastestGrowth) {
           fastestGrowth = diff; fastestKey = key;
-          fastestFromX = sortedData[i][xKey]; fastestToX = sortedData[i + 1][xKey];
+          fastestFromX = displayData[i][xKey]; fastestToX = displayData[i + 1][xKey];
         }
       }
     });
@@ -436,14 +473,18 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     let smallestRange = Infinity;
     let consistentKey = '';
     yKeys.forEach(key => {
-      const vals = sortedData.map(row => row[key] as number).filter(v => typeof v === 'number' && !isNaN(v));
+      const vals = displayData.map(row => row[key] as number).filter(v => typeof v === 'number' && !isNaN(v));
       if (vals.length === 0) return;
       const range = Math.max(...vals) - Math.min(...vals);
       if (range < smallestRange) { smallestRange = range; consistentKey = key; }
     });
 
     return { highestVal, highestKey, highestX, fastestGrowth, fastestKey, fastestFromX, fastestToX, consistentKey, smallestRange };
-  }, [sortedData, chartConfig]);
+  }, [displayData, chartConfig]);
+
+  // displayData is always ≤ 15 entries so labels always fit — no hiding needed
+  const hideXLabels = false;
+  const xLabelInterval = 0;
 
   // Shared date label formatter — strips timestamp when time is midnight,
   // shows hour only when the data actually has sub-day granularity.
@@ -502,9 +543,13 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       .replace(/\bMIN\b/gi, 'Minimum')
       .replace(/\b\w/g, (l: string) => l.toUpperCase());
     return typeof value === 'number'
-      ? [value.toLocaleString(), formattedName]
+      ? [fmtNum(value), formattedName]
       : [value, formattedName];
   };
+
+  // Format a number with at most 2 decimal places
+  const fmtNum = (v: number) =>
+    v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
   // Generate legend items for display above chart
   const renderLegendItems = () => {
@@ -559,7 +604,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
   // Render appropriate chart based on type
   const renderChart = () => {
-    if (!sortedData || sortedData.length === 0) {
+    if (!displayData || displayData.length === 0) {
       return (
         <Box sx={{
           display: 'flex',
@@ -579,7 +624,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'line':
         return (
             <ResponsiveContainer width="100%" height={height}>
-              <LineChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+              <LineChart data={displayData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid 
                 strokeDasharray="3 3" 
                 stroke={alpha(theme.palette.divider, 0.3)}
@@ -590,12 +635,14 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                angle={-45}
-                textAnchor="end"
-                height={55}
+                angle={hideXLabels ? 0 : -45}
+                textAnchor={hideXLabels ? 'middle' : 'end'}
+                height={hideXLabels ? 20 : 55}
+                tick={!hideXLabels}
+                interval={xLabelInterval}
                 tickFormatter={formatDateLabel}
               />
-              <YAxis 
+              <YAxis
                 stroke={theme.palette.text.secondary}
                 fontSize={11}
                 tickFormatter={(value) => {
@@ -605,7 +652,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                     } else if (value >= 1000) {
                       return `${(value / 1000).toFixed(0)}K`;
                     }
-                    return value.toLocaleString();
+                    return fmtNum(value);
                   }
                   return value;
                 }}
@@ -665,7 +712,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'bar':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={sortedData} margin={{ top: 10, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <BarChart data={displayData} margin={{ top: 10, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <defs>
                 {yKeys.map((key, index) => (
                   <linearGradient key={`gradient-${index}`} id={`barGradient-${index}`} x1="0" y1="0" x2="0" y2="1">
@@ -681,15 +728,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 horizontal={true}
                 vertical={false}
               />
-              <XAxis 
-                dataKey={xKey} 
+              <XAxis
+                dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={11}
                 fontWeight={500}
-                angle={-45}
-                textAnchor="end"
-                height={65}
-                interval={0}
+                angle={hideXLabels ? 0 : -45}
+                textAnchor={hideXLabels ? 'middle' : 'end'}
+                height={hideXLabels ? 20 : 65}
+                tick={!hideXLabels}
+                interval={xLabelInterval}
                 axisLine={{ stroke: alpha(theme.palette.divider, 0.3), strokeWidth: 1 }}
                 tickLine={{ stroke: alpha(theme.palette.divider, 0.3), strokeWidth: 1 }}
                 tickFormatter={(value) => {
@@ -711,7 +759,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                     } else if (value >= 1000) {
                       return `${(value / 1000).toFixed(0)}K`;
                     }
-                    return value.toLocaleString();
+                    return fmtNum(value);
                   }
                   return value;
                 }}
@@ -764,21 +812,23 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'area':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <AreaChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <AreaChart data={displayData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                angle={-45}
-                textAnchor="end"
-                height={55}
+                angle={hideXLabels ? 0 : -45}
+                textAnchor={hideXLabels ? 'middle' : 'end'}
+                height={hideXLabels ? 20 : 55}
+                tick={!hideXLabels}
+                interval={xLabelInterval}
                 tickFormatter={formatDateLabel}
               />
               <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
+                tickFormatter={(value) => typeof value === 'number' ? fmtNum(value) : value}
               />
               <Tooltip 
                 formatter={customTooltipFormatter}
@@ -816,7 +866,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'circle':
       case 'pie':
         // Transform data for pie chart
-        const pieData = yKeys.length > 0 ? sortedData.map((item, index) => ({
+        const pieData = yKeys.length > 0 ? displayData.map((item, index) => ({
           name: item[xKey] || `Item ${index + 1}`,
           value: item[yKeys[0]] || 0
         })) : [];
@@ -842,7 +892,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 ))}
               </Pie>
               <Tooltip 
-                formatter={(value) => [typeof value === 'number' ? value.toLocaleString() : value, 'Value']}
+                formatter={(value) => [typeof value === 'number' ? fmtNum(value) : value, 'Value']}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -867,21 +917,23 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'scatter':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <ScatterChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <ScatterChart data={displayData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                angle={-45}
-                textAnchor="end"
-                height={55}
+                angle={hideXLabels ? 0 : -45}
+                textAnchor={hideXLabels ? 'middle' : 'end'}
+                height={hideXLabels ? 20 : 55}
+                tick={!hideXLabels}
+                interval={xLabelInterval}
                 tickFormatter={formatDateLabel}
               />
               <YAxis 
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
+                tickFormatter={(value) => typeof value === 'number' ? fmtNum(value) : value}
               />
               <Tooltip 
                 formatter={customTooltipFormatter}
@@ -917,21 +969,23 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         // Default to bar chart for unknown types
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <BarChart data={displayData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                angle={-45}
-                textAnchor="end"
-                height={55}
+                angle={hideXLabels ? 0 : -45}
+                textAnchor={hideXLabels ? 'middle' : 'end'}
+                height={hideXLabels ? 20 : 55}
+                tick={!hideXLabels}
+                interval={xLabelInterval}
                 tickFormatter={formatDateLabel}
               />
-              <YAxis 
+              <YAxis
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
-                tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
+                tickFormatter={(value) => typeof value === 'number' ? fmtNum(value) : value}
               />
               <Tooltip 
                 formatter={customTooltipFormatter}
@@ -965,25 +1019,38 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     }
   };
 
+  // Hint shown below chart when data was trimmed to top 15
+  const renderXHint = () =>
+    isTrimmed ? (
+      <Typography sx={{ textAlign: 'center', fontSize: '0.7rem', color: 'text.disabled', mt: 0.5, userSelect: 'none' }}>
+        Showing top 15 of {totalEntries} entries by value
+      </Typography>
+    ) : null;
+
   // Grouped bar chart for Compare tab (one bar group per X value, one bar per series)
   const renderCompareChart = () => {
     const { xKey, yKeys } = chartConfig;
-    if (!sortedData || sortedData.length === 0) return null;
+    if (!displayData || displayData.length === 0) return null;
     return (
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} barCategoryGap="20%" barGap={3} style={{ overflow: 'visible' }}>
+        <BarChart data={displayData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} barCategoryGap="20%" barGap={3} style={{ overflow: 'visible' }}>
           <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} horizontal vertical={false} />
           <XAxis
             dataKey={xKey}
             stroke={theme.palette.text.secondary}
             fontSize={12}
+            angle={hideXLabels ? 0 : -45}
+            textAnchor={hideXLabels ? 'middle' : 'end'}
+            height={hideXLabels ? 20 : 55}
+            tick={!hideXLabels}
+            interval={xLabelInterval}
             tickFormatter={formatDateLabel}
           />
           <YAxis
             stroke={theme.palette.text.secondary}
             fontSize={11}
             width={70}
-            tickFormatter={(v) => typeof v === 'number' && v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v}
+            tickFormatter={(v) => typeof v === 'number' ? (v >= 1000000 ? `${(v / 1000000).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(0)}K` : fmtNum(v)) : v}
           />
           <Tooltip
             formatter={customTooltipFormatter}
@@ -1013,26 +1080,30 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   const renderInsights = () => {
     if (!insights || !isMultiSeries) return null;
     const { xKey } = chartConfig;
+
+    const safeNum = (v: number) => (typeof v === 'number' && isFinite(v) ? fmtNum(v) : '');
+    const safeStr = (v: any) => (v != null && v !== '' ? String(v) : '');
+
+    const highestVal = safeNum(insights.highestVal);
+    const highestSub = highestVal && insights.highestKey && insights.highestX != null
+      ? `${safeStr(insights.highestKey)}, ${xKey === 'name' || typeof displayData[0]?.[xKey] === 'number' ? `Hour ${insights.highestX}` : safeStr(insights.highestX)}`
+      : '';
+
+    const fastestGrowth = insights.fastestGrowth > 0 ? `+${fmtNum(insights.fastestGrowth)}` : '';
+    const fastestSub = fastestGrowth && insights.fastestKey && insights.fastestFromX != null && insights.fastestToX != null
+      ? `${safeStr(insights.fastestKey)}: ${safeStr(insights.fastestFromX)}→${safeStr(insights.fastestToX)}`
+      : '';
+
+    const consistentKey = safeStr(insights.consistentKey);
+    const consistentSub = consistentKey && isFinite(insights.smallestRange)
+      ? `Range: ${fmtNum(insights.smallestRange)}`
+      : '';
+
     const cards = [
-      {
-        label: 'Highest engagement',
-        value: insights.highestVal.toLocaleString(),
-        sub: `${insights.highestKey}, ${xKey === 'name' || typeof sortedData[0]?.[xKey] === 'number' ? `Hour ${insights.highestX}` : insights.highestX}`,
-        color: CHART_COLORS[0],
-      },
-      {
-        label: 'Fastest hourly growth',
-        value: `+${insights.fastestGrowth}`,
-        sub: `${insights.fastestKey}: ${insights.fastestFromX}→${insights.fastestToX}`,
-        color: CHART_COLORS[1],
-      },
-      {
-        label: 'Most consistent',
-        value: insights.consistentKey,
-        sub: `Range: ${insights.smallestRange} users`,
-        color: CHART_COLORS[2],
-      },
-    ];
+      { label: 'Highest engagement',   value: highestVal,   sub: highestSub,   color: CHART_COLORS[0] },
+      { label: 'Fastest growth',        value: fastestGrowth, sub: fastestSub,  color: CHART_COLORS[1] },
+      { label: 'Most consistent',       value: consistentKey, sub: consistentSub, color: CHART_COLORS[2] },
+    ].filter(card => card.value !== '');
     return (
       <Box sx={{ display: 'flex', gap: 1.5, mt: 2, flexWrap: 'wrap' }}>
         {cards.map((card) => (
@@ -1082,18 +1153,21 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     const lastY  = useWide && yKeys.length > 1 ? yKeys[yKeys.length - 1] : null;
     const tableRows = useWide ? sortedData : originalData;
 
+    const cellSx = { fontSize: '0.85rem', whiteSpace: 'nowrap' as const };
+    const headSx = { ...cellSx, fontWeight: 600, backgroundColor: theme.palette.background.default };
+
     return (
-      <TableContainer sx={{ maxHeight: height - 100 }}>
-        <Table stickyHeader size="small">
+      <TableContainer sx={{ maxHeight: height - 100, overflowX: 'auto', overflowY: 'auto' }}>
+        <Table stickyHeader size="small" sx={{ minWidth: 'max-content' }}>
           <TableHead>
             <TableRow>
               {columns.map((col) => (
-                <TableCell key={col} sx={{ fontWeight: 600, backgroundColor: theme.palette.background.default, fontSize: '0.85rem' }}>
+                <TableCell key={col} sx={headSx}>
                   {col.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                 </TableCell>
               ))}
               {useWide && firstY && lastY && (
-                <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.background.default, fontSize: '0.85rem', color: CHART_COLORS[2] }}>
+                <TableCell sx={{ ...headSx, color: CHART_COLORS[2] }}>
                   Δ {lastY} vs {firstY}
                 </TableCell>
               )}
@@ -1103,12 +1177,12 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
             {tableRows.map((row, index) => (
               <TableRow key={(row as any).id || index} hover>
                 {columns.map((col) => (
-                  <TableCell key={col} sx={{ fontSize: '0.85rem' }}>
-                    {typeof row[col] === 'number' ? row[col].toLocaleString() : row[col]?.toString() || '-'}
+                  <TableCell key={col} sx={cellSx}>
+                    {typeof row[col] === 'number' ? fmtNum(row[col] as number) : row[col]?.toString() || '-'}
                   </TableCell>
                 ))}
                 {useWide && firstY && lastY && (
-                  <TableCell sx={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                  <TableCell sx={cellSx}>
                     {(() => {
                       const delta = (row[lastY] as number) - (row[firstY] as number);
                       const color = delta > 0 ? '#059669' : delta < 0 ? '#DC2626' : 'text.secondary';
@@ -1158,6 +1232,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           <>
             {renderLegendItems()}
             {renderChart()}
+            {renderXHint()}
             {renderInsights()}
           </>
         )}
@@ -1167,6 +1242,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
             <>
               {renderLegendItems()}
               {renderCompareChart()}
+              {renderXHint()}
             </>
           ) : renderTable()
         )}
