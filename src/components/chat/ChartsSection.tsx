@@ -1,29 +1,22 @@
-/**
- * ChartsSection Component
- * Displays accordion with chart visualizations
- */
-
 import React from 'react';
 import {
   Box,
-  Paper,
   Typography,
   Stack,
-  Chip,
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  Divider,
-  alpha,
-  useTheme
 } from '@mui/material';
-import {
-  ExpandMore as ExpandMoreIcon,
-  BarChart as BarChartIcon
-} from '@mui/icons-material';
+import { ExpandMore as ExpandMoreIcon, BarChart as BarChartIcon } from '@mui/icons-material';
 import { CHAT_TEXT } from '../../constants/textConstants';
 import { ChartVisualization } from '../ChartVisualization';
 import { ChartContent } from '../../types/chart';
+
+// explicit tokens — no theme inheritance
+const BLUE    = '#2563EB';
+const BLUE_BG = '#EFF6FF';
+const BLUE_BD = '#BFDBFE';
+const BORDER  = '#E2E8F0';
 
 interface ChartsSectionProps {
   messageId: string;
@@ -36,103 +29,79 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({
   messageId,
   charts,
   collapsed,
-  onToggle
+  onToggle,
 }) => {
-  const theme = useTheme();
-
-  // Don't render if there are no charts
-  if (!charts || charts.length === 0) {
-    return null;
-  }
+  if (!charts || charts.length === 0) return null;
 
   return (
-    <Paper 
-      elevation={2} 
-      sx={{ 
-        mb: 2, 
-        borderRadius: 1.5,
-        background: (theme) => theme.palette.mode === 'dark' 
-          ? `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.03)}, ${alpha(theme.palette.secondary.main, 0.02)})`
-          : alpha(theme.palette.grey[50], 0.8),
-        border: (theme) => theme.palette.mode === 'dark'
-          ? `1px solid ${alpha(theme.palette.primary.main, 0.12)}`
-          : `1px solid ${alpha(theme.palette.grey[300], 0.8)}`,
-        display: { xs: 'none', md: 'block' } // Hide on mobile
+    <Box
+      sx={{
+        mb: 2,
+        borderRadius: '10px',
+        border: `1px solid ${BLUE_BD}`,
+        bgcolor: BLUE_BG,
+        overflow: 'hidden',
       }}
     >
-      <Accordion 
+      <Accordion
         expanded={!collapsed}
         onChange={() => onToggle(messageId)}
-        sx={{ 
+        disableGutters
+        sx={{
           boxShadow: 'none',
-          backgroundColor: 'transparent',
-          '&:before': { display: 'none' }
+          background: 'transparent',
+          '&:before': { display: 'none' },
         }}
       >
-        <AccordionSummary 
-          expandIcon={<ExpandMoreIcon color="primary" />}
-          sx={{ 
-            py: 0.5,
-            '& .MuiAccordionSummary-content': { 
-              alignItems: 'center' 
-            }
+        <AccordionSummary
+          expandIcon={<ExpandMoreIcon sx={{ fontSize: 15, color: BLUE }} />}
+          sx={{
+            minHeight: '40px',
+            px: 2, py: 0,
+            background: 'transparent',
+            '& .MuiAccordionSummary-content': { margin: '10px 0', alignItems: 'center', gap: '8px' },
+            '&.Mui-expanded': { minHeight: '40px' },
           }}
         >
-          <Stack direction="row" alignItems="center" spacing={2} sx={{ width: '100%' }}>
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 40,
-                height: 40,
-                borderRadius: '50%',
-                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                border: `2px solid ${alpha(theme.palette.primary.main, 0.2)}`
-              }}
-            >
-              <BarChartIcon color="primary" />
-            </Box>
-            <Box sx={{ flex: 1 }}>
-              <Stack direction="row" alignItems="center" spacing={1}>
-                <Typography variant="subtitle1" color="primary.main" sx={{ fontWeight: 600 }}>
-                  {CHAT_TEXT.VISUALIZATION.TITLE}
-                </Typography>
-                <Chip
-                  label={`${charts.length} ${charts.length !== 1 ? 'charts' : 'chart'}`}
-                  size="small"
-                  variant="outlined"
-                  sx={{ 
-                    borderColor: alpha(theme.palette.grey[500], 0.4),
-                    color: 'text.secondary',
-                    backgroundColor: alpha(theme.palette.grey[100], 0.3),
-                    fontSize: '0.7rem', 
-                    height: 18,
-                    fontWeight: 400
-                  }}
-                />
-              </Stack>
-            </Box>
-          </Stack>
+          <Box sx={{
+            width: 26, height: 26, borderRadius: '7px', bgcolor: `${BLUE}18`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>
+            <BarChartIcon sx={{ fontSize: 14, color: BLUE }} />
+          </Box>
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: BLUE, letterSpacing: '0.02em', userSelect: 'none' }}>
+            {CHAT_TEXT.VISUALIZATION.TITLE}
+          </Typography>
+          <Box sx={{
+            px: '7px', py: '2px', borderRadius: '20px',
+            bgcolor: `${BLUE}14`, border: `1px solid ${BLUE_BD}`,
+          }}>
+            <Typography sx={{ fontSize: '0.7rem', color: BLUE, fontWeight: 500 }}>
+              {charts.length} {charts.length !== 1 ? 'charts' : 'chart'}
+            </Typography>
+          </Box>
         </AccordionSummary>
-        
-        <AccordionDetails sx={{ pt: 0, pb: 1 }}>
-          <Divider sx={{ mb: 2, bgcolor: alpha(theme.palette.primary.main, 0.3) }} />
-          
+
+        <AccordionDetails sx={{ px: 2, pt: 0, pb: 2, background: 'transparent' }}>
+          <Box sx={{ height: 1, bgcolor: BLUE_BD, mb: 2 }} />
           <Stack spacing={3}>
             {charts.map((chartContent, index) => (
-              <Box key={index}>
-                <ChartVisualization 
-                  chartContent={chartContent}
-                  height={300}
-                />
+              <Box
+                key={index}
+                sx={{
+                  bgcolor: '#ffffff',
+                  borderRadius: '8px',
+                  border: `1px solid ${BORDER}`,
+                  p: 2,
+                  overflow: 'visible',
+                }}
+              >
+                <ChartVisualization chartContent={chartContent} height={300} />
               </Box>
             ))}
           </Stack>
         </AccordionDetails>
       </Accordion>
-    </Paper>
+    </Box>
   );
 };
-
-

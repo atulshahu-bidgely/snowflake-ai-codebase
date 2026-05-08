@@ -22,11 +22,10 @@ interface ThemeContextProviderProps {
 }
 
 export const ThemeContextProvider: React.FC<ThemeContextProviderProps> = ({ children }) => {
-  // Initialize theme from localStorage or default to dark mode
+  // Initialize theme from localStorage or default to light mode
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const savedTheme = localStorage.getItem('theme-preference');
-    // Explicitly default to dark mode - only use light if explicitly set
-    return savedTheme !== 'light'; // Default to dark mode unless explicitly set to light
+    return savedTheme === 'dark'; // Default to light mode unless explicitly set to dark
   });
 
   // Create theme based on current mode
@@ -41,10 +40,10 @@ export const ThemeContextProvider: React.FC<ThemeContextProviderProps> = ({ chil
     });
   };
 
-  // Set default dark theme if no preference exists
+  // Set default light theme if no preference exists
   useEffect(() => {
     if (!localStorage.getItem('theme-preference')) {
-      localStorage.setItem('theme-preference', 'dark');
+      localStorage.setItem('theme-preference', 'light');
     }
   }, []);
 
