@@ -128,21 +128,25 @@ const SimpleChatInterface: React.FC = () => {
   // Auto-expand charts after final response text is displayed
   useEffect(() => {
     const timeouts: NodeJS.Timeout[] = [];
-    
+
     messages.forEach(message => {
-      if (message.sender === 'assistant' && 
-          message.charts && 
-          message.charts.length > 0 && 
-          message.status === 'sent' && 
+      if (message.sender === 'assistant' &&
+          message.charts &&
+          message.charts.length > 0 &&
+          message.status === 'sent' &&
           !message.isStreaming &&
-          message.text && 
+          message.text &&
           message.text.trim().length > 0 &&
           !manuallyToggledCharts.has(message.id)) {
-        // Auto-expand charts accordion only after final response text is displayed
-        const timeoutId = setTimeout(() => {
+        const expandId = setTimeout(() => {
           chartsAccordion.expand(message.id);
         }, 300);
-        timeouts.push(timeoutId);
+        timeouts.push(expandId);
+        // Scroll to bottom after the chart accordion has expanded and rendered
+        const scrollId = setTimeout(() => {
+          scrollToBottom();
+        }, 500);
+        timeouts.push(scrollId);
       }
     });
 
@@ -373,13 +377,8 @@ const SimpleChatInterface: React.FC = () => {
   }
 
   return (
-    <Box sx={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
-      minHeight: '100vh', 
-      bgcolor: 'background.default', 
-      color: 'text.primary' 
-    }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', color: 'text.primary', position: 'relative', zIndex: 1 }}>
+
       {/* Header */}
       <ChatHeader />
 

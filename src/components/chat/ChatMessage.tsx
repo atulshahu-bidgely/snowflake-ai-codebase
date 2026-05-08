@@ -171,20 +171,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               />
             )}
 
-            {/* Charts */}
-            {isAssistant &&
-             message.charts &&
-             message.charts.length > 0 &&
-             message.status === 'sent' &&
-             !message.isStreaming && (
-              <ChartsSection
-                messageId={message.id}
-                charts={message.charts}
-                collapsed={collapsedCharts}
-                onToggle={onToggleCharts}
-              />
-            )}
-
             {/* Slim progress bar — streaming with content visible */}
             {message.status === 'thinking' &&
              isAssistant &&
@@ -231,6 +217,32 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                       />
                     );
                   })()}
+                  {/* Prominent Download CSV button — shown inline when a table is present */}
+                  {hasTable && message.status === 'sent' && !message.isStreaming && (
+                    <Box
+                      component="button"
+                      onClick={handleDownloadCsv}
+                      sx={{
+                        mt: 2,
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                        px: '16px', py: '9px',
+                        bgcolor: '#059669',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s',
+                        boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
+                        '&:hover': { bgcolor: '#047857', boxShadow: '0 4px 12px rgba(5,150,105,0.4)' },
+                        '&:active': { transform: 'scale(0.98)' },
+                      }}
+                    >
+                      <DownloadIcon sx={{ fontSize: 16, color: 'white' }} />
+                      <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'white', letterSpacing: '-0.01em' }}>
+                        Download CSV
+                      </Typography>
+                    </Box>
+                  )}
                   {message.status === 'sent' &&
                    !message.isStreaming &&
                    message.annotations &&
@@ -244,6 +256,20 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                   )}
                 </Box>
               )
+            )}
+
+            {/* Charts — rendered after text so they appear where the user is looking */}
+            {isAssistant &&
+             message.charts &&
+             message.charts.length > 0 &&
+             message.status === 'sent' &&
+             !message.isStreaming && (
+              <ChartsSection
+                messageId={message.id}
+                charts={message.charts}
+                collapsed={collapsedCharts}
+                onToggle={onToggleCharts}
+              />
             )}
 
             {/* Error */}

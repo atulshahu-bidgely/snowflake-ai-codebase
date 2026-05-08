@@ -314,92 +314,65 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     return { xKey, yKeys };
   }, [data]);
 
-  // Enhanced tooltip formatter to match the reference image
-  const formatTooltipValue = (value: any, name: any): any => {
-    if (typeof value === 'number') {
-      return [value.toLocaleString(), name.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())];
+  // Shared date label formatter — strips timestamp when time is midnight,
+  // shows hour only when the data actually has sub-day granularity.
+  const formatDateLabel = (value: any): string => {
+    if (!value || typeof value !== 'string' || !value.includes('-')) return value;
+
+    // Detect whether a time component is present (space or T separator)
+    const separator = value.includes('T') ? 'T' : (value.includes(' ') ? ' ' : null);
+    let datePart = value;
+    let hasNonZeroHour = false;
+    let hourValue = 0;
+
+    if (separator) {
+      datePart = value.split(separator)[0];
+      const timePart = value.split(separator)[1] || '';
+      // Strip fractional seconds / timezone before parsing hour
+      hourValue = parseInt(timePart.split(':')[0], 10) || 0;
+      hasNonZeroHour = hourValue !== 0;
     }
-    return [value, name];
+
+    const parts = datePart.split('-');
+    if (parts.length < 3) return value;
+    const year  = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1; // 0-indexed
+    const day   = parseInt(parts[2], 10);
+    if (isNaN(year) || isNaN(month) || isNaN(day)) return value;
+
+    const dateObj = new Date(year, month, day);
+
+    if (hasNonZeroHour) {
+      // Hourly granularity — show date + hour
+      const ampm   = hourValue >= 12 ? 'PM' : 'AM';
+      const hour12 = hourValue % 12 || 12;
+      return `${dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${hour12}${ampm}`;
+    }
+
+    // Date-only: use day-of-month to infer granularity
+    if (day === 1) {
+      // Monthly data — show "Mar 2023"
+      return dateObj.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    }
+    // Daily data — show "Mar 1, 2023"
+    return dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  // Enhanced label formatter for tooltips
-  const formatTooltipLabel = (label: any): any => {
-    if (label && typeof label === 'string') {
-      // Convert date strings to readable format like "Month (2025) Jul"
-      if (label.includes('-') && label.length >= 7) {
-        try {
-          const date = new Date(label);
-          if (!isNaN(date.getTime())) {
-            const month = date.toLocaleDateString('en-US', { month: 'short' });
-            const year = date.getFullYear();
-            return `Month (${year}) ${month}`;
-          }
-        } catch (e) {
-          // Fall through to default formatting
-        }
-      }
-    }
-    return label;
-  };
-
-  // Generic tooltip formatter for any data type
+  // Tooltip value formatter — pretty-prints field names and numbers
   const customTooltipFormatter = (value: any, name: any): any => {
-    // Enhanced field name formatting
-    let formattedName = name;
-    
-    // Replace underscores with spaces
-    formattedName = formattedName.replace(/_/g, ' ');
-    
-    // Handle common patterns for better readability
-    formattedName = formattedName
+    let formattedName = (name as string)
+      .replace(/_/g, ' ')
       .replace(/\bCOUNT\b/gi, 'Count')
       .replace(/\bREGISTRATION\b/gi, 'Registration')
       .replace(/\bTOTAL\b/gi, 'Total')
       .replace(/\bAVG\b/gi, 'Average')
       .replace(/\bSUM\b/gi, 'Sum')
       .replace(/\bMAX\b/gi, 'Maximum')
-      .replace(/\bMIN\b/gi, 'Minimum');
-    
-    // Title case for remaining words
-    formattedName = formattedName.replace(/\b\w/g, (l: string) => l.toUpperCase());
-    
-    if (typeof value === 'number') {
-      return [value.toLocaleString(), formattedName];
-    }
-    return [value, formattedName];
-  };
-
-  // Generic label formatter for tooltips - handles dates, strings, etc.
-  const customLabelFormatter = (label: any): any => {
-    if (label && typeof label === 'string') {
-      // Try to parse as date
-      if (label.includes('-') && label.length >= 7) {
-        try {
-          const date = new Date(label);
-          if (!isNaN(date.getTime())) {
-            // For monthly data
-            if (label.includes('-01')) {
-              const month = date.toLocaleDateString('en-US', { month: 'short' });
-              const year = date.getFullYear();
-              return `${month} ${year}`;
-            }
-            // For daily data
-            return date.toLocaleDateString('en-US', { 
-              month: 'short', 
-              day: 'numeric', 
-              year: 'numeric' 
-            });
-          }
-        } catch (e) {
-          // Fall through to default formatting
-        }
-      }
-      
-      // Format category labels (e.g., "Person Industry Category")
-      // Keep as-is if it's already in a readable format
-      return label;
-    }
-    return label;
+      .replace(/\bMIN\b/gi, 'Minimum')
+      .replace(/\b\w/g, (l: string) => l.toUpperCase());
+    return typeof value === 'number'
+      ? [value.toLocaleString(), formattedName]
+      : [value, formattedName];
   };
 
   // Generate legend items for display above chart
@@ -475,34 +448,21 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'line':
         return (
             <ResponsiveContainer width="100%" height={height}>
-              <LineChart data={data} margin={{ top: 20, right: 30, left: 50, bottom: 60 }}>
+              <LineChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid 
                 strokeDasharray="3 3" 
                 stroke={alpha(theme.palette.divider, 0.3)}
                 horizontal={true}
                 vertical={false}
               />
-              <XAxis 
-                dataKey={xKey} 
+              <XAxis
+                dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
-                height={60}
-                tickFormatter={(value) => {
-                  // Format month values for display
-                  if (typeof value === 'string' && value.includes('-')) {
-                    try {
-                      const date = new Date(value);
-                      if (!isNaN(date.getTime())) {
-                        return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-                      }
-                    } catch (e) {
-                      // Fall through to default
-                    }
-                  }
-                  return value;
-                }}
+                height={55}
+                tickFormatter={formatDateLabel}
               />
               <YAxis 
                 stroke={theme.palette.text.secondary}
@@ -523,7 +483,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
               />
               <Tooltip 
                 formatter={customTooltipFormatter}
-                labelFormatter={customLabelFormatter}
+                labelFormatter={formatDateLabel}
                 contentStyle={{
                   backgroundColor: alpha(theme.palette.background.paper, 0.95),
                   border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
@@ -570,7 +530,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'bar':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={data} margin={{ top: 10, right: 30, left: 60, bottom: 90 }}>
+            <BarChart data={data} margin={{ top: 10, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <defs>
                 {yKeys.map((key, index) => (
                   <linearGradient key={`gradient-${index}`} id={`barGradient-${index}`} x1="0" y1="0" x2="0" y2="1">
@@ -593,16 +553,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 fontWeight={500}
                 angle={-45}
                 textAnchor="end"
-                height={90}
+                height={65}
                 interval={0}
                 axisLine={{ stroke: alpha(theme.palette.divider, 0.3), strokeWidth: 1 }}
                 tickLine={{ stroke: alpha(theme.palette.divider, 0.3), strokeWidth: 1 }}
                 tickFormatter={(value) => {
-                  // Truncate long labels for better readability
-                  if (typeof value === 'string' && value.length > 25) {
-                    return value.substring(0, 22) + '...';
+                  const formatted = formatDateLabel(value);
+                  if (typeof formatted === 'string' && formatted.length > 25) {
+                    return formatted.substring(0, 22) + '...';
                   }
-                  return value;
+                  return formatted;
                 }}
               />
               <YAxis 
@@ -626,7 +586,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
               />
               <Tooltip 
                 formatter={customTooltipFormatter}
-                labelFormatter={customLabelFormatter}
+                labelFormatter={formatDateLabel}
                 contentStyle={{
                   backgroundColor: alpha(theme.palette.background.paper, 0.95),
                   border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
@@ -669,15 +629,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'area':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <AreaChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+            <AreaChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
-              <XAxis 
-                dataKey={xKey} 
+              <XAxis
+                dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
-                height={60}
+                height={55}
+                tickFormatter={formatDateLabel}
               />
               <YAxis 
                 stroke={theme.palette.text.secondary}
@@ -685,8 +646,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
               <Tooltip 
-                formatter={formatTooltipValue}
-                labelFormatter={formatTooltipLabel}
+                formatter={customTooltipFormatter}
+                labelFormatter={formatDateLabel}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -771,15 +732,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'scatter':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <ScatterChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+            <ScatterChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
-              <XAxis 
-                dataKey={xKey} 
+              <XAxis
+                dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
-                height={60}
+                height={55}
+                tickFormatter={formatDateLabel}
               />
               <YAxis 
                 stroke={theme.palette.text.secondary}
@@ -787,8 +749,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
               <Tooltip 
-                formatter={formatTooltipValue}
-                labelFormatter={formatTooltipLabel}
+                formatter={customTooltipFormatter}
+                labelFormatter={formatDateLabel}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -820,15 +782,16 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         // Default to bar chart for unknown types
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+            <BarChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
-              <XAxis 
-                dataKey={xKey} 
+              <XAxis
+                dataKey={xKey}
                 stroke={theme.palette.text.secondary}
                 fontSize={12}
                 angle={-45}
                 textAnchor="end"
-                height={60}
+                height={55}
+                tickFormatter={formatDateLabel}
               />
               <YAxis 
                 stroke={theme.palette.text.secondary}
@@ -836,8 +799,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
               <Tooltip 
-                formatter={formatTooltipValue}
-                labelFormatter={formatTooltipLabel}
+                formatter={customTooltipFormatter}
+                labelFormatter={formatDateLabel}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -925,14 +888,14 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       elevation={2}
       sx={{
         borderRadius: 2,
-        overflow: 'hidden',
+        overflow: 'visible',
         border: `1px solid ${alpha(theme.palette.divider, 0.2)}`
       }}
     >
       {/* Header */}
       <Box sx={{ p: 2, pb: 0 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+          <Typography variant="h6" sx={{ fontWeight: 600, textAlign: 'center', flex: 1 }}>
             {title || 'Data Visualization'}
           </Typography>
         </Box>
@@ -941,6 +904,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         <Tabs
           value={activeTab}
           onChange={(_, newValue) => setActiveTab(newValue)}
+          centered
           sx={{ borderBottom: 1, borderColor: 'divider' }}
         >
           <Tab label="Chart" />
@@ -949,7 +913,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       </Box>
 
       {/* Content */}
-      <Box sx={{ p: 2 }}>
+      <Box sx={{ px: 2, pt: 2, pb: 4, overflow: 'visible' }}>
         {activeTab === 0 ? (
           <>
             {renderLegendItems()}

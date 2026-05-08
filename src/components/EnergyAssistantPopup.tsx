@@ -98,6 +98,7 @@ Do not show sources.`;
 
 export const EnergyAssistantPopup: React.FC = () => {
   const [open, setOpen]                         = useState(false);
+  const [showBeta, setShowBeta]                 = useState(() => localStorage.getItem('energy-analyzer-opened') !== 'true');
   const [inputText, setInputText]               = useState('');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const inputRef                                = useRef<HTMLInputElement>(null);
@@ -240,11 +241,13 @@ export const EnergyAssistantPopup: React.FC = () => {
             <Typography sx={{ fontSize: 15, fontWeight: 600, color: '#1a1d23', fontFamily: FONT, letterSpacing: '-0.01em' }}>
               Energy Analyzer
             </Typography>
-            <Box sx={{ bgcolor: '#f0f0f0', borderRadius: '4px', px: '6px', py: '2px' }}>
-              <Typography sx={{ fontSize: 10, fontWeight: 500, color: '#888', fontFamily: FONT, letterSpacing: '0.03em', textTransform: 'uppercase' }}>
-                Beta
-              </Typography>
-            </Box>
+            {showBeta && (
+              <Box sx={{ bgcolor: '#f0f0f0', borderRadius: '4px', px: '6px', py: '2px' }}>
+                <Typography sx={{ fontSize: 10, fontWeight: 500, color: '#888', fontFamily: FONT, letterSpacing: '0.03em', textTransform: 'uppercase' }}>
+                  Beta
+                </Typography>
+              </Box>
+            )}
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -575,7 +578,13 @@ export const EnergyAssistantPopup: React.FC = () => {
       {/* FAB */}
       <Zoom in={!open}>
         <Fab
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setOpen(true);
+            if (showBeta) {
+              setShowBeta(false);
+              localStorage.setItem('energy-analyzer-opened', 'true');
+            }
+          }}
           aria-label="Open Energy Analyzer"
           sx={{
             position: 'fixed', bottom: 32, right: 32,
@@ -612,11 +621,11 @@ const InputBox: React.FC<InputBoxProps> = ({
 }) => (
   <Box
     sx={{
-      width: '100%', height,
+      width: '100%',
       border: `1.5px solid ${isLoading ? RED + '50' : '#d8dbe2'}`,
       borderRadius: '10px',
       boxShadow: isLoading ? `0 0 0 3px ${RED}14` : '0px 1px 6px rgba(40,41,61,0.05)',
-      bgcolor: 'white', position: 'relative', overflow: 'hidden',
+      bgcolor: 'white', position: 'relative',
       transition: 'border-color 0.2s, box-shadow 0.2s',
       '&:focus-within': {
         borderColor: isLoading ? RED + '70' : BLUE,
@@ -626,7 +635,9 @@ const InputBox: React.FC<InputBoxProps> = ({
   >
     <TextField
       fullWidth
-      multiline={height >= 60}
+      multiline
+      minRows={1}
+      maxRows={5}
       placeholder={placeholder}
       value={value}
       onChange={e => onChange(e.target.value)}
@@ -635,10 +646,9 @@ const InputBox: React.FC<InputBoxProps> = ({
       variant="standard"
       inputRef={inputRef}
       sx={{
-        position: 'absolute', inset: 0,
         '& .MuiInputBase-root': {
-          height: '100%', alignItems: 'flex-start',
-          px: '14px', pt: height >= 60 ? '12px' : '0px',
+          alignItems: 'flex-start',
+          px: '14px', pt: '12px', pb: '44px',
           fontFamily: FONT, fontSize: 14, color: '#1a1d23',
         },
         '& .MuiInputBase-input::placeholder': { color: '#b0b8c8', opacity: 1 },
@@ -654,8 +664,8 @@ const InputBox: React.FC<InputBoxProps> = ({
       disabled={!isLoading && !value.trim()}
       sx={{
         position: 'absolute',
-        bottom: height >= 60 ? 8 : '50%',
-        transform: height >= 60 ? 'none' : 'translateY(50%)',
+        bottom: 8,
+        transform: 'none',
         right: 8,
         width: 34, height: 34,
         bgcolor: isLoading ? '#fff2f2' : !value.trim() ? '#f4f6f9' : BLUE,
