@@ -70,13 +70,13 @@ export type ChartType = 'line' | 'bar' | 'area' | 'pie' | 'scatter';
 
 // Snowflake-inspired professional color palette
 export const CHART_COLORS = [
-  '#29B5E8', // Snowflake primary blue
+  '#1D9E75', // Teal
+  '#7F77DD', // Purple
+  '#D85A30', // Coral
+  '#29B5E8', // Snowflake blue
   '#1976D2', // Deep blue
-  '#4CAF50', // Success green  
-  '#FF9800', // Warning orange
-  '#9C27B0', // Purple
-  '#F44336', // Error red
+  '#4CAF50', // Green
+  '#FF9800', // Orange
   '#00BCD4', // Cyan
   '#795548', // Brown
-  '#607D8B'  // Blue grey
 ];
