@@ -30,7 +30,8 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer
+  ResponsiveContainer,
+  ReferenceDot
 } from 'recharts';
 import { ChartVisualizationProps, VegaLiteSpec, RechartsData, CHART_COLORS } from '../types/chart';
 
@@ -79,6 +80,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           const encodingYField = vegaSpec.encoding?.y?.field;
 
           // Detect category/series field (e.g. ZIP, region, product)
+          // Primary: use Vega-Lite encoding.color.field (authoritative when present).
+          // Fallback: match by field name only — no value-range guessing which
+          // would false-positive on kWh/revenue fields.
           const categoryField =
             (encodingColorField && keys.includes(encodingColorField) ? encodingColorField : null) ||
             keys.find(key =>
@@ -93,11 +97,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
               key.toLowerCase().includes('region') ||
               key.toLowerCase().includes('segment') ||
               key.toLowerCase().includes('district') ||
-              key.toLowerCase().includes('territory') ||
-              // Numeric values that look like ZIP codes (5-digit integers 10000-99999)
-              (typeof firstItem[key] === 'number' &&
-                firstItem[key] >= 10000 && firstItem[key] <= 99999 &&
-                Number.isInteger(firstItem[key]))
+              key.toLowerCase().includes('territory')
             );
 
           // Detect time/X field
@@ -161,7 +161,13 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 });
               }
 
-              pivotMap.get(timeKey)[category] = value;
+              // Label month numbers as "Month 6" etc. for readable series names
+              const categoryKey =
+                categoryField.toLowerCase().includes('month') &&
+                (typeof category === 'number' || /^\d{1,2}$/.test(String(category)))
+                  ? `Month ${category}`
+                  : String(category);
+              pivotMap.get(timeKey)[categoryKey] = value;
             });
 
             transformedData = Array.from(pivotMap.values());
@@ -262,7 +268,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     const dataKeys = Object.keys(data[0] || {});
     
     // Auto-detect X-axis field (temporal/categorical) - generic approach
-    let xKey = dataKeys.find(key => 
+    let xKey = dataKeys.find(key =>
       key.toLowerCase().includes('month') ||
       key.toLowerCase().includes('date') ||
       key.toLowerCase().includes('timestamp') ||
@@ -274,6 +280,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       key.toLowerCase().includes('quarter') ||
       key.toLowerCase().includes('week') ||
       key.toLowerCase().includes('day') ||
+      key.toLowerCase() === 'hour' ||
       key === 'name' ||
       key.toLowerCase().includes('category') ||
       key.toLowerCase().includes('group') ||
@@ -352,6 +359,91 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
     return { xKey, yKeys };
   }, [data]);
+
+  // Sort data by X axis when it looks temporal — uses the same xKey the XAxis renders,
+  // so this always sorts what's actually displayed regardless of Vega-Lite spec completeness.
+  const sortedData = useMemo(() => {
+    const { xKey } = chartConfig;
+    if (!data || data.length <= 1 || !xKey) return data;
+    const sampleVal = data[0]?.[xKey];
+    // ISO date string — lexicographic order matches chronological order
+    if (typeof sampleVal === 'string' && (
+      /^\d{4}-\d{2}/.test(sampleVal) ||
+      /^\d{4}$/.test(sampleVal) ||
+      /^\d{4}\//.test(sampleVal)
+    )) {
+      return [...data].sort((a, b) =>
+        String(a[xKey] ?? '').localeCompare(String(b[xKey] ?? ''))
+      );
+    }
+    // Numeric X (hours, ordinal labels) — sort ascending
+    if (typeof sampleVal === 'number') {
+      return [...data].sort((a, b) => (a[xKey] as number) - (b[xKey] as number));
+    }
+    return data;
+  }, [data, chartConfig]);
+
+  const isMultiSeries = chartConfig.yKeys.length > 1;
+  const tabs = isMultiSeries ? ['Trend', 'Compare', 'Table'] : ['Chart', 'Table'];
+
+  // Peak value per series (for Trend annotations)
+  const peaks = useMemo(() => {
+    const { xKey, yKeys } = chartConfig;
+    if (!sortedData || sortedData.length === 0 || !isMultiSeries) return [];
+    return yKeys.map((key, i) => {
+      let maxVal = -Infinity;
+      let maxX: any = null;
+      sortedData.forEach(row => {
+        const v = typeof row[key] === 'number' ? (row[key] as number) : NaN;
+        if (!isNaN(v) && v > maxVal) { maxVal = v; maxX = row[xKey]; }
+      });
+      return { key, maxVal, maxX, color: CHART_COLORS[i % CHART_COLORS.length] };
+    }).filter(p => p.maxX !== null);
+  }, [sortedData, chartConfig, isMultiSeries]);
+
+  // Key insights for multi-series data
+  const insights = useMemo(() => {
+    const { xKey, yKeys } = chartConfig;
+    if (!sortedData || sortedData.length < 2 || yKeys.length < 1) return null;
+
+    // Highest single value
+    let highestVal = -Infinity;
+    let highestKey = '';
+    let highestX: any = null;
+    yKeys.forEach(key => {
+      sortedData.forEach(row => {
+        const v = row[key] as number;
+        if (typeof v === 'number' && v > highestVal) { highestVal = v; highestKey = key; highestX = row[xKey]; }
+      });
+    });
+
+    // Fastest single-step growth
+    let fastestGrowth = 0;
+    let fastestKey = '';
+    let fastestFromX: any = null;
+    let fastestToX: any = null;
+    yKeys.forEach(key => {
+      for (let i = 0; i < sortedData.length - 1; i++) {
+        const diff = (sortedData[i + 1][key] as number) - (sortedData[i][key] as number);
+        if (typeof diff === 'number' && diff > fastestGrowth) {
+          fastestGrowth = diff; fastestKey = key;
+          fastestFromX = sortedData[i][xKey]; fastestToX = sortedData[i + 1][xKey];
+        }
+      }
+    });
+
+    // Most consistent series (smallest value range)
+    let smallestRange = Infinity;
+    let consistentKey = '';
+    yKeys.forEach(key => {
+      const vals = sortedData.map(row => row[key] as number).filter(v => typeof v === 'number' && !isNaN(v));
+      if (vals.length === 0) return;
+      const range = Math.max(...vals) - Math.min(...vals);
+      if (range < smallestRange) { smallestRange = range; consistentKey = key; }
+    });
+
+    return { highestVal, highestKey, highestX, fastestGrowth, fastestKey, fastestFromX, fastestToX, consistentKey, smallestRange };
+  }, [sortedData, chartConfig]);
 
   // Shared date label formatter — strips timestamp when time is midnight,
   // shows hour only when the data actually has sub-day granularity.
@@ -467,14 +559,14 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
   // Render appropriate chart based on type
   const renderChart = () => {
-    if (!data || data.length === 0) {
+    if (!sortedData || sortedData.length === 0) {
       return (
-        <Box sx={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
+        <Box sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           height: height,
-          color: 'text.secondary' 
+          color: 'text.secondary'
         }}>
           <Typography variant="body1">No data available for visualization</Typography>
         </Box>
@@ -487,7 +579,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'line':
         return (
             <ResponsiveContainer width="100%" height={height}>
-              <LineChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+              <LineChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid 
                 strokeDasharray="3 3" 
                 stroke={alpha(theme.palette.divider, 0.3)}
@@ -549,17 +641,21 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   dataKey={key}
                   stroke={CHART_COLORS[index % CHART_COLORS.length]}
                   strokeWidth={3}
-                  dot={{ 
-                    fill: CHART_COLORS[index % CHART_COLORS.length], 
-                    strokeWidth: 2, 
-                    r: 5
-                  }}
-                  activeDot={{ 
-                    r: 8, 
-                    stroke: CHART_COLORS[index % CHART_COLORS.length], 
-                    strokeWidth: 3,
-                    fill: '#ffffff'
-                  }}
+                  dot={{ fill: CHART_COLORS[index % CHART_COLORS.length], strokeWidth: 2, r: 5 }}
+                  activeDot={{ r: 8, stroke: CHART_COLORS[index % CHART_COLORS.length], strokeWidth: 3, fill: '#ffffff' }}
+                />
+              ))}
+              {/* Peak annotations — one dot+label per series */}
+              {peaks.map(({ key, maxVal, maxX, color }) => (
+                <ReferenceDot
+                  key={`peak-${key}`}
+                  x={maxX}
+                  y={maxVal}
+                  r={8}
+                  fill={color}
+                  stroke="#ffffff"
+                  strokeWidth={2}
+                  label={{ value: `▲ ${maxVal}`, position: 'top', fontSize: 11, fontWeight: 600, fill: color }}
                 />
               ))}
             </LineChart>
@@ -569,7 +665,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'bar':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={data} margin={{ top: 10, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <BarChart data={sortedData} margin={{ top: 10, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <defs>
                 {yKeys.map((key, index) => (
                   <linearGradient key={`gradient-${index}`} id={`barGradient-${index}`} x1="0" y1="0" x2="0" y2="1">
@@ -668,7 +764,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'area':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <AreaChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <AreaChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
@@ -720,7 +816,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'circle':
       case 'pie':
         // Transform data for pie chart
-        const pieData = yKeys.length > 0 ? data.map((item, index) => ({
+        const pieData = yKeys.length > 0 ? sortedData.map((item, index) => ({
           name: item[xKey] || `Item ${index + 1}`,
           value: item[yKeys[0]] || 0
         })) : [];
@@ -771,7 +867,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       case 'scatter':
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <ScatterChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <ScatterChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
@@ -821,7 +917,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         // Default to bar chart for unknown types
         return (
           <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={data} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
+            <BarChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} style={{ overflow: 'visible' }}>
               <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} />
               <XAxis
                 dataKey={xKey}
@@ -869,6 +965,102 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     }
   };
 
+  // Grouped bar chart for Compare tab (one bar group per X value, one bar per series)
+  const renderCompareChart = () => {
+    const { xKey, yKeys } = chartConfig;
+    if (!sortedData || sortedData.length === 0) return null;
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={sortedData} margin={{ top: 20, right: 70, left: 0, bottom: 5 }} barCategoryGap="20%" barGap={3} style={{ overflow: 'visible' }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.divider, 0.3)} horizontal vertical={false} />
+          <XAxis
+            dataKey={xKey}
+            stroke={theme.palette.text.secondary}
+            fontSize={12}
+            tickFormatter={formatDateLabel}
+          />
+          <YAxis
+            stroke={theme.palette.text.secondary}
+            fontSize={11}
+            width={70}
+            tickFormatter={(v) => typeof v === 'number' && v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v}
+          />
+          <Tooltip
+            formatter={customTooltipFormatter}
+            labelFormatter={formatDateLabel}
+            contentStyle={{
+              backgroundColor: alpha(theme.palette.background.paper, 0.95),
+              border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+              borderRadius: '8px',
+              fontSize: '0.875rem',
+            }}
+            labelStyle={{ fontWeight: 600, color: theme.palette.text.primary }}
+          />
+          {yKeys.map((key, index) => (
+            <Bar
+              key={key}
+              dataKey={key}
+              fill={CHART_COLORS[index % CHART_COLORS.length]}
+              radius={[4, 4, 0, 0]}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  };
+
+  // Key insights panel — shown below Trend chart for multi-series data
+  const renderInsights = () => {
+    if (!insights || !isMultiSeries) return null;
+    const { xKey } = chartConfig;
+    const cards = [
+      {
+        label: 'Highest engagement',
+        value: insights.highestVal.toLocaleString(),
+        sub: `${insights.highestKey}, ${xKey === 'name' || typeof sortedData[0]?.[xKey] === 'number' ? `Hour ${insights.highestX}` : insights.highestX}`,
+        color: CHART_COLORS[0],
+      },
+      {
+        label: 'Fastest hourly growth',
+        value: `+${insights.fastestGrowth}`,
+        sub: `${insights.fastestKey}: ${insights.fastestFromX}→${insights.fastestToX}`,
+        color: CHART_COLORS[1],
+      },
+      {
+        label: 'Most consistent',
+        value: insights.consistentKey,
+        sub: `Range: ${insights.smallestRange} users`,
+        color: CHART_COLORS[2],
+      },
+    ];
+    return (
+      <Box sx={{ display: 'flex', gap: 1.5, mt: 2, flexWrap: 'wrap' }}>
+        {cards.map((card) => (
+          <Box
+            key={card.label}
+            sx={{
+              flex: '1 1 140px',
+              p: 1.5,
+              borderRadius: '8px',
+              border: `1px solid ${alpha(card.color, 0.25)}`,
+              bgcolor: alpha(card.color, 0.06),
+            }}
+          >
+            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', mb: 0.25, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              {card.label}
+            </Typography>
+            <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: card.color, lineHeight: 1.2 }}>
+              {card.value}
+            </Typography>
+            <Typography sx={{ fontSize: '0.72rem', color: 'text.secondary', mt: 0.25 }}>
+              {card.sub}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
+    );
+  };
+
   // Render data table
   const renderTable = () => {
     if (!originalData || originalData.length === 0) {
@@ -879,41 +1071,51 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       );
     }
 
-    const columns = Object.keys(originalData[0] || {}).filter(key => key !== 'id');
+    const { xKey, yKeys } = chartConfig;
+    // For multi-series pivoted data use sortedData (wide format) + a delta column
+    const useWide = isMultiSeries && sortedData && sortedData.length > 0 && yKeys.length >= 2;
+    const columns = useWide
+      ? [xKey, ...yKeys]
+      : Object.keys(originalData[0] || {}).filter(key => key !== 'id');
+
+    const firstY = useWide ? yKeys[0] : null;
+    const lastY  = useWide && yKeys.length > 1 ? yKeys[yKeys.length - 1] : null;
+    const tableRows = useWide ? sortedData : originalData;
 
     return (
       <TableContainer sx={{ maxHeight: height - 100 }}>
         <Table stickyHeader size="small">
           <TableHead>
             <TableRow>
-              {columns.map((column) => (
-                <TableCell
-                  key={column}
-                  sx={{
-                    fontWeight: 600,
-                    backgroundColor: theme.palette.background.default,
-                    fontSize: '0.9rem'
-                  }}
-                >
-                  {column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+              {columns.map((col) => (
+                <TableCell key={col} sx={{ fontWeight: 600, backgroundColor: theme.palette.background.default, fontSize: '0.85rem' }}>
+                  {col.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                 </TableCell>
               ))}
+              {useWide && firstY && lastY && (
+                <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.background.default, fontSize: '0.85rem', color: CHART_COLORS[2] }}>
+                  Δ {lastY} vs {firstY}
+                </TableCell>
+              )}
             </TableRow>
           </TableHead>
           <TableBody>
-            {originalData.map((row, index) => (
-              <TableRow key={row.id || index} hover>
-                {columns.map((column) => (
-                  <TableCell 
-                    key={column}
-                    sx={{ fontSize: '0.9rem' }}
-                  >
-                    {typeof row[column] === 'number' 
-                      ? row[column].toLocaleString()
-                      : row[column]?.toString() || '-'
-                    }
+            {tableRows.map((row, index) => (
+              <TableRow key={(row as any).id || index} hover>
+                {columns.map((col) => (
+                  <TableCell key={col} sx={{ fontSize: '0.85rem' }}>
+                    {typeof row[col] === 'number' ? row[col].toLocaleString() : row[col]?.toString() || '-'}
                   </TableCell>
                 ))}
+                {useWide && firstY && lastY && (
+                  <TableCell sx={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                    {(() => {
+                      const delta = (row[lastY] as number) - (row[firstY] as number);
+                      const color = delta > 0 ? '#059669' : delta < 0 ? '#DC2626' : 'text.secondary';
+                      return <Typography component="span" sx={{ fontSize: '0.85rem', fontWeight: 600, color }}>{delta > 0 ? `+${delta}` : delta}</Typography>;
+                    })()}
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -939,28 +1141,37 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           </Typography>
         </Box>
 
-        {/* Simple Tabs */}
         <Tabs
           value={activeTab}
           onChange={(_, newValue) => setActiveTab(newValue)}
           centered
           sx={{ borderBottom: 1, borderColor: 'divider' }}
         >
-          <Tab label="Chart" />
-          <Tab label="Table" />
+          {tabs.map((label) => <Tab key={label} label={label} />)}
         </Tabs>
       </Box>
 
       {/* Content */}
       <Box sx={{ px: 2, pt: 2, pb: 4, overflow: 'visible' }}>
-        {activeTab === 0 ? (
+        {/* Tab 0: Trend / Chart */}
+        {activeTab === 0 && (
           <>
             {renderLegendItems()}
             {renderChart()}
+            {renderInsights()}
           </>
-        ) : (
-          renderTable()
         )}
+        {/* Tab 1: Compare (multi-series) or Table (single-series) */}
+        {activeTab === 1 && (
+          isMultiSeries ? (
+            <>
+              {renderLegendItems()}
+              {renderCompareChart()}
+            </>
+          ) : renderTable()
+        )}
+        {/* Tab 2: Table (multi-series only) */}
+        {activeTab === 2 && isMultiSeries && renderTable()}
       </Box>
     </Paper>
   );
