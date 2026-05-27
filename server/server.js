@@ -16,7 +16,8 @@ const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-require('dotenv').config();
+const { Client } = require('langsmith');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const { HTTP_STATUS, ERROR_MESSAGES, CONFIG } = require('./constants');
 
 
@@ -58,6 +59,16 @@ const SNOWFLAKE_CONFIG = {
   database: process.env.SNOWFLAKE_DATABASE,
   schema: process.env.SNOWFLAKE_SCHEMA
 };
+const LANGSMITH_ENABLED = Boolean(process.env.LANGSMITH_API_KEY);
+
+const langsmith = LANGSMITH_ENABLED
+ ? new Client({
+     apiKey: process.env.LANGSMITH_API_KEY,
+     apiUrl: process.env.LANGSMITH_ENDPOINT || 'https://api.smith.langchain.com',
+   })
+ : null;
+
+const LANGSMITH_PROJECT = process.env.LANGSMITH_PROJECT || 'Energy_Assistant_2.0';
 
 // ============================================================================
 // Middleware Configuration
@@ -169,6 +180,65 @@ const validateAgentName = (agentName) => {
   // Allow alphanumeric, underscore, hyphen, and dot
   const validPattern = /^[a-zA-Z0-9_\-\.]+$/;
   return validPattern.test(agentName) && agentName.length <= CONFIG.MAX_AGENT_NAME_LENGTH;
+};
+const uuidv4 = () =>
+  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+const createLangSmithRun = async ({ req, agentName, requestBody }) => {
+ if (!langsmith) return null;
+
+ try {
+   const runId = uuidv4();
+
+   await langsmith.createRun({
+     id: runId,
+     name: 'snowflake-agent-proxy',
+     run_type: 'chain',
+     project_name: LANGSMITH_PROJECT,
+     inputs: {
+       agentName,
+       messages: requestBody.messages || [],
+       metadata: requestBody.metadata || {},
+     },
+     extra: {
+       metadata: {
+         route: req.path,
+         method: req.method,
+         userAgent: req.get('user-agent') || '',
+         streamed: Boolean(requestBody.stream),
+       },
+     },
+   });
+
+   return runId;
+ } catch (err) {
+   console.warn('⚠️ LangSmith createRun failed:', err.message);
+   return null;
+ }
+};
+
+const finishLangSmithRun = async (runId, { output, error, status, latencyMs, streamed }) => {
+ if (!langsmith || !runId) return;
+
+ try {
+   await langsmith.updateRun(runId, {
+     outputs: output !== undefined ? { response: output } : undefined,
+     error: error ? (typeof error === 'string' ? error : JSON.stringify(error)) : undefined,
+     end_time: new Date().toISOString(),
+     extra: {
+       metadata: {
+         status,
+         latencyMs,
+         streamed,
+       },
+     },
+   });
+ } catch (err) {
+   console.warn('⚠️ LangSmith updateRun failed:', err.message);
+ }
 };
 
 // ============================================================================
@@ -349,145 +419,178 @@ app.get('/api/agents/:agentName', async (req, res) => {
  * Send message to Cortex Agent (streaming endpoint)
  * POST /api/agents/:agentName/messages
  */
+
 app.post('/api/agents/:agentName/messages', async (req, res) => {
-  try {
-    const { agentName } = req.params;
-    const requestBody = req.body;
-    
-    // Validate inputs
-    if (!validateAgentName(agentName)) {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
-    }
-    
-    // Validate request body has messages
-    if (!requestBody.messages || !Array.isArray(requestBody.messages) || requestBody.messages.length === 0) {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.MESSAGES_REQUIRED });
-    }
+ const startTime = Date.now();
+ let langsmithRunId = null;
 
-    console.log(`💬 Sending message to agent: ${agentName}`);
-    
-    // Build Snowflake agent messaging endpoint dynamically
-    // Format: https://{host}/api/v2/databases/{db}/schemas/{schema}/agents/{agent}:run
-    const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:run`;
-    
-    // Make request to Snowflake Agent endpoint
-    const response = await fetch(agentEndpoint, {
-      method: 'POST',
-      headers: getSnowflakeAuthHeaders(),
-      body: JSON.stringify(requestBody),
-    });
+ try {
+   const { agentName } = req.params;
+   const requestBody = req.body;
 
-    if (!response.ok) {
-      const contentType = response.headers.get('content-type') || '';
-      
-      // Build error message as array of parts (preserves structure better than string with \n\n)
-      const errorParts = [
-        ERROR_MESSAGES.ERROR_PREFIX,
-        `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`
-      ];
-      
-      // For 400/401, skip error details (they're not helpful)
-      // For 404 and others, include Snowflake's error details
-      if (response.status !== HTTP_STATUS.BAD_REQUEST && response.status !== HTTP_STATUS.UNAUTHORIZED) {
-        if (contentType.includes('application/json')) {
-          try {
-            const errorData = await response.json();
-            const details = errorData.error || errorData.message || JSON.stringify(errorData, null, 2);
-            errorParts.push(details);
-          } catch {
-            // JSON parsing failed, use default message
-          }
-        }
-      }
-      
-      // Add helpful configuration hints based on status code and content type
-      if (response.status === 400) {
-        errorParts.push('💡 Tip: Check your SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA in the backend .env file. Make sure they exist and you have access to them.');
-      } else if (response.status === 401) {
-        errorParts.push('💡 Tip: Check your SNOWFLAKE_PAT (Personal Access Token) in the backend .env file. Make sure it\'s valid and not expired.');
-      } else if (response.status === 404) {
-        errorParts.push('💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible.');
-      }
-      
-      console.error('❌ Snowflake Agent API error:', response.status, errorParts.join('\n'));
-      
-      return res.status(response.status).json({
-        errorParts  // Send as array instead of single string
-      });
-    }
+   // Validate inputs
+   if (!validateAgentName(agentName)) {
+     return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+   }
 
-    // Check if response is streaming
-    const contentType = response.headers.get('content-type');
-    
-    if (contentType?.includes('text/event-stream') || contentType?.includes('stream')) {
-      // Set headers for SSE streaming
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for nginx
-      
-      console.log('📡 Streaming response from agent...');
-      
-      // Use Node.js streams to pipe the response
-      const reader = response.body.getReader();
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              res.end();
-              console.log('✅ Streaming complete');
-              break;
-            }
-            
-            // Write chunk to response
-            if (!res.write(value)) {
-              // Backpressure - wait for drain
-              await new Promise(resolve => res.once('drain', resolve));
-            }
-          }
-        } catch (error) {
-          console.error('❌ Stream error:', error);
-          if (!res.headersSent) {
-            res.status(500).json({ error: 'Streaming failed' });
-          } else {
-            res.end();
-          }
-        }
-      };
-      
-      // Handle client disconnect
-      req.on('close', () => {
-        console.log('⚠️  Client disconnected');
-        reader.cancel();
-      });
-      
-      pump();
-    } else {
-      // Non-streaming response
-      const data = await response.json();
-      console.log('✅ Received non-streaming response from agent');
-      res.json(data);
-    }
-  } catch (error) {
-    console.error('❌ Error sending message to agent:', error.message);
-    
-    if (!res.headersSent) {
-      // Check if this is a network error (DNS, connection failed, etc.)
-      if (error.cause?.code === 'ENOTFOUND' || error.message.includes('fetch failed') || error.cause?.code === 'ECONNREFUSED') {
-        const errorParts = [
-          ERROR_MESSAGES.ERROR_PREFIX,
-          'Failed to connect to Snowflake',
-          '💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible (format: account.snowflakecomputing.com)'
-        ];
-        return res.status(503).json({ errorParts });
-      }
-      
-      res.status(500).json({ error: sanitizeError(error) });
-    }
-  }
+   // Validate request body has messages
+   if (!requestBody.messages || !Array.isArray(requestBody.messages) || requestBody.messages.length === 0) {
+     return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.MESSAGES_REQUIRED });
+   }
+
+   // Start LangSmith trace
+   langsmithRunId = await createLangSmithRun({ req, agentName, requestBody });
+
+   console.log(`💬 Sending message to agent: ${agentName}`);
+
+   const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:run`;
+
+   const response = await fetch(agentEndpoint, {
+     method: 'POST',
+     headers: getSnowflakeAuthHeaders(),
+     body: JSON.stringify(requestBody),
+   });
+
+   if (!response.ok) {
+     const contentType = response.headers.get('content-type') || '';
+
+     const errorParts = [
+       ERROR_MESSAGES.ERROR_PREFIX,
+       `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`
+     ];
+
+     if (response.status !== HTTP_STATUS.BAD_REQUEST && response.status !== HTTP_STATUS.UNAUTHORIZED) {
+       if (contentType.includes('application/json')) {
+         try {
+           const errorData = await response.json();
+           const details = errorData.error || errorData.message || JSON.stringify(errorData, null, 2);
+           errorParts.push(details);
+         } catch {
+           // ignore parse failure
+         }
+       }
+     }
+
+     if (response.status === 400) {
+       errorParts.push('💡 Tip: Check your SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA in the backend .env file. Make sure they exist and you have access to them.');
+     } else if (response.status === 401) {
+       errorParts.push('💡 Tip: Check your SNOWFLAKE_PAT (Personal Access Token) in the backend .env file. Make sure it\'s valid and not expired.');
+     } else if (response.status === 404) {
+       errorParts.push('💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible.');
+     }
+
+     console.error('❌ Snowflake Agent API error:', response.status, errorParts.join('\n'));
+
+     await finishLangSmithRun(langsmithRunId, {
+       error: { errorParts },
+       status: response.status,
+       latencyMs: Date.now() - startTime,
+       streamed: false,
+     });
+
+     return res.status(response.status).json({ errorParts });
+   }
+
+   const contentType = response.headers.get('content-type');
+
+   if (contentType?.includes('text/event-stream') || contentType?.includes('stream')) {
+     res.setHeader('Content-Type', 'text/event-stream');
+     res.setHeader('Cache-Control', 'no-cache');
+     res.setHeader('Connection', 'keep-alive');
+     res.setHeader('X-Accel-Buffering', 'no');
+
+     console.log('📡 Streaming response from agent...');
+
+     const reader = response.body.getReader();
+     const decoder = new TextDecoder();
+     let fullStreamText = '';
+
+     const pump = async () => {
+       try {
+         while (true) {
+           const { done, value } = await reader.read();
+
+           if (done) {
+             await finishLangSmithRun(langsmithRunId, {
+               output: fullStreamText,
+               status: response.status,
+               latencyMs: Date.now() - startTime,
+               streamed: true,
+             });
+
+             res.end();
+             console.log('✅ Streaming complete');
+             break;
+           }
+
+           fullStreamText += decoder.decode(value, { stream: true });
+
+           if (!res.write(value)) {
+             await new Promise(resolve => res.once('drain', resolve));
+           }
+         }
+       } catch (error) {
+         console.error('❌ Stream error:', error);
+
+         await finishLangSmithRun(langsmithRunId, {
+           error: { message: error.message },
+           status: 500,
+           latencyMs: Date.now() - startTime,
+           streamed: true,
+         });
+
+         if (!res.headersSent) {
+           res.status(500).json({ error: 'Streaming failed' });
+         } else {
+           res.end();
+         }
+       }
+     };
+
+     req.on('close', () => {
+       console.log('⚠️ Client disconnected');
+       reader.cancel();
+     });
+
+     pump();
+   } else {
+     const data = await response.json();
+     console.log('✅ Received non-streaming response from agent');
+
+     await finishLangSmithRun(langsmithRunId, {
+       output: data,
+       status: response.status,
+       latencyMs: Date.now() - startTime,
+       streamed: false,
+     });
+
+     res.json(data);
+   }
+ } catch (error) {
+   console.error('❌ Error sending message to agent:', error.message);
+
+   await finishLangSmithRun(langsmithRunId, {
+     error: sanitizeError(error),
+     status: 500,
+     latencyMs: Date.now() - startTime,
+     streamed: false,
+   });
+
+   if (!res.headersSent) {
+     if (error.cause?.code === 'ENOTFOUND' || error.message.includes('fetch failed') || error.cause?.code === 'ECONNREFUSED') {
+       const errorParts = [
+         ERROR_MESSAGES.ERROR_PREFIX,
+         'Failed to connect to Snowflake',
+         '💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible (format: account.snowflakecomputing.com)'
+       ];
+       return res.status(503).json({ errorParts });
+     }
+
+     res.status(500).json({ error: sanitizeError(error) });
+   }
+ }
 });
+
 
 // Serve React static files in production
 if (process.env.NODE_ENV === 'production') {
