@@ -11,6 +11,7 @@ import { ExpandMore as ExpandMoreIcon, BarChart as BarChartIcon } from '@mui/ico
 import { CHAT_TEXT } from '../../constants/textConstants';
 import { ChartVisualization } from '../ChartVisualization';
 import { ChartContent } from '../../types/chart';
+import { hasUsableChartData } from '../../utils/chatUtils';
 
 // explicit tokens — no theme inheritance
 const BLUE    = '#2563EB';
@@ -31,7 +32,8 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({
   collapsed,
   onToggle,
 }) => {
-  if (!charts || charts.length === 0) return null;
+  const renderableCharts = charts?.filter(chart => hasUsableChartData(chart.chart_spec)) ?? [];
+  if (renderableCharts.length === 0) return null;
 
   return (
     <Box
@@ -78,7 +80,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({
             bgcolor: `${BLUE}14`, border: `1px solid ${BLUE_BD}`,
           }}>
             <Typography sx={{ fontSize: '0.7rem', color: BLUE, fontWeight: 500 }}>
-              {charts.length} {charts.length !== 1 ? 'charts' : 'chart'}
+              {renderableCharts.length} {renderableCharts.length !== 1 ? 'charts' : 'chart'}
             </Typography>
           </Box>
         </AccordionSummary>
@@ -86,7 +88,7 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({
         <AccordionDetails sx={{ px: 2, pt: 0, pb: 2, background: 'transparent' }}>
           <Box sx={{ height: 1, bgcolor: BLUE_BD, mb: 2 }} />
           <Stack spacing={3}>
-            {charts.map((chartContent, index) => (
+            {renderableCharts.map((chartContent, index) => (
               <Box
                 key={index}
                 sx={{

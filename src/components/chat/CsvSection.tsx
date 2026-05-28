@@ -17,9 +17,6 @@ import {
   TableChart as PreviewIcon,
   KeyboardArrowUp as CollapseIcon,
 } from '@mui/icons-material';
-
-const BLUE      = '#2563EB';
-const BLUE_BG   = '#EFF6FF';
 const BORDER    = '#E2E8F0';
 const TEXT      = '#1E293B';
 const TEXT2     = '#64748B';
@@ -43,6 +40,7 @@ export const CsvSection: React.FC<CsvSectionProps> = ({
   filename = `target_candidates_${new Date().toISOString().slice(0, 10)}.csv`,
 }) => {
   const [previewOpen, setPreviewOpen] = useState(false);
+  if (headers.length === 0 || rows.length === 0) return null;
 
   const handleDownload = () => {
     const escape = (cell: string) => `"${cell.replace(/"/g, '""')}"`;

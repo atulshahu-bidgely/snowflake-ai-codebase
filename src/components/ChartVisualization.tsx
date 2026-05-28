@@ -35,6 +35,26 @@ import {
 } from 'recharts';
 import { ChartVisualizationProps, VegaLiteSpec, RechartsData, CHART_COLORS } from '../types/chart';
 
+const asObjectRows = (rows: unknown): Record<string, any>[] =>
+  Array.isArray(rows)
+    ? rows.filter((row): row is Record<string, any> =>
+        row !== null &&
+        typeof row === 'object' &&
+        Object.keys(row).length > 0
+      )
+    : [];
+
+const parseNumericValue = (value: any): any => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string') return value;
+
+  const normalized = value.replace(/,/g, '').replace(/[%$]/g, '').trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(normalized)) return value;
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : value;
+};
+
 const ChartVisualization: React.FC<ChartVisualizationProps> = ({ 
   chartContent, 
   height = 380 
@@ -53,12 +73,14 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       // Handle Vega-Lite specifications (primary format)
       // Check for Vega-Lite by: $schema, or presence of required Vega-Lite fields
       const hasVegaLiteSchema = chartSpec.$schema && chartSpec.$schema.includes('vega-lite');
-      const hasVegaLiteFields = chartSpec.mark && chartSpec.data && chartSpec.data.values;
+      const hasVegaLiteFields = Array.isArray(chartSpec.data?.values);
       
       if (hasVegaLiteSchema || hasVegaLiteFields) {
         const vegaSpec = chartSpec as VegaLiteSpec;
-        const data = vegaSpec.data.values;
-        const mark = typeof vegaSpec.mark === 'string' ? vegaSpec.mark : vegaSpec.mark.type;
+        const data = asObjectRows(vegaSpec.data?.values);
+        const mark = typeof vegaSpec.mark === 'string'
+          ? vegaSpec.mark
+          : (vegaSpec.mark?.type || 'bar');
         
         // Store original data for table view
         const originalData = data.map((item: any, index: number) => ({ 
@@ -180,9 +202,10 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           
           // Add lowercase versions of field names for consistent access
           Object.keys(item).forEach(key => {
+            normalizedItem[key] = parseNumericValue(normalizedItem[key]);
             const lowerKey = key.toLowerCase();
             if (lowerKey !== key && !normalizedItem[lowerKey]) {
-              normalizedItem[lowerKey] = item[key];
+              normalizedItem[lowerKey] = normalizedItem[key];
             }
           });
           
@@ -211,14 +234,21 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       }
 
       // Handle generic chart specifications
-      if (chartSpec.type && chartSpec.data) {
-        const originalData = chartSpec.data.map((item: any, index: number) => ({ 
+      if (chartSpec.type && Array.isArray(chartSpec.data)) {
+        const data = asObjectRows(chartSpec.data).map(item => {
+          const normalizedItem = { ...item };
+          Object.keys(normalizedItem).forEach(key => {
+            normalizedItem[key] = parseNumericValue(normalizedItem[key]);
+          });
+          return normalizedItem;
+        });
+        const originalData = data.map((item: any, index: number) => ({ 
           id: index, 
           ...item 
         }));
         return {
           type: chartSpec.type,
-          data: chartSpec.data,
+          data,
           originalData,
           title: chartSpec.title
         };
@@ -226,13 +256,20 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
       // Handle direct data arrays
       if (Array.isArray(chartSpec)) {
-        const originalData = chartSpec.map((item: any, index: number) => ({ 
+        const data = asObjectRows(chartSpec).map(item => {
+          const normalizedItem = { ...item };
+          Object.keys(normalizedItem).forEach(key => {
+            normalizedItem[key] = parseNumericValue(normalizedItem[key]);
+          });
+          return normalizedItem;
+        });
+        const originalData = data.map((item: any, index: number) => ({ 
           id: index, 
           ...item 
         }));
         return {
           type: 'bar',
-          data: chartSpec,
+          data,
           originalData,
           title: 'Chart'
         };
@@ -250,7 +287,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
         type: 'bar',
         data: [],
         originalData: [],
-        title: 'Chart Parse Error'
+        title: 'No Data Available'
       };
     }
   };

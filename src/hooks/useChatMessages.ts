@@ -7,7 +7,7 @@ import { useState, useCallback, useRef } from 'react';
 import { ChatMessage } from '../types/chat';
 import { ChartContent } from '../types/chart';
 import { config } from '../config/env';
-import { extractSqlQuery, extractVerificationInfo } from '../utils/chatUtils';
+import { extractSqlQuery, extractVerificationInfo, hasUsableChartData } from '../utils/chatUtils';
 import { ERROR_TEXT, API_DEFAULTS, getApiStatusMessage } from '../constants/textConstants';
 
 const MAX_MESSAGES = 100;
@@ -17,7 +17,12 @@ export const useChatMessages = (selectedAgent: string) => {
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const sendMessage = useCallback(async (message: string, displayText?: string, isTarget?: boolean) => {
+  const sendMessage = useCallback(async (
+    message: string,
+    displayText?: string,
+    isTarget?: boolean,
+    isAnalysis?: boolean
+  ) => {
     if (!message.trim() || isLoading) return;
 
     const messageId = Date.now().toString();
@@ -42,6 +47,7 @@ export const useChatMessages = (selectedAgent: string) => {
       timeline: [],
       toolsUsed: [],
       isTarget: isTarget ?? false,
+      isAnalysis: isAnalysis ?? false,
     };
 
     setMessages(prev => {
@@ -121,6 +127,7 @@ export const useChatMessages = (selectedAgent: string) => {
       const decoder = new TextDecoder();
       let assistantText = '';
       let currentEvent = '';
+      let streamErrorMessage = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -251,6 +258,9 @@ export const useChatMessages = (selectedAgent: string) => {
                 if (data.chart_spec) {
                   try {
                     const chartSpec = JSON.parse(data.chart_spec);
+                    if (!hasUsableChartData(chartSpec)) {
+                      continue;
+                    }
                     const chartContent: ChartContent = {
                       type: 'vega-lite' as const,
                       chart_spec: chartSpec
@@ -315,9 +325,16 @@ export const useChatMessages = (selectedAgent: string) => {
                     console.warn('Failed to process annotation:', annotationError);
                   }
                 }
+              } else if (currentEvent === 'response.error') {
+                streamErrorMessage = data.message || ERROR_TEXT.UNKNOWN_ERROR;
               }
             } catch (parseError) {
               // Skip malformed streaming data
+            }
+            if (streamErrorMessage) {
+              const error = new Error(streamErrorMessage);
+              (error as any).fullMessage = streamErrorMessage;
+              throw error;
             }
           }
         }
@@ -412,5 +429,3 @@ export const useChatMessages = (selectedAgent: string) => {
     clearMessages
   };
 };
-
-

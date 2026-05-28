@@ -16,6 +16,7 @@ const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+const https = require('https');
 require('dotenv').config();
 const { HTTP_STATUS, ERROR_MESSAGES, CONFIG } = require('./constants');
 
@@ -170,6 +171,44 @@ const validateAgentName = (agentName) => {
   const validPattern = /^[a-zA-Z0-9_\-\.]+$/;
   return validPattern.test(agentName) && agentName.length <= CONFIG.MAX_AGENT_NAME_LENGTH;
 };
+
+const writeSseEvent = (res, event, data) => {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+
+const collectStreamBody = (stream) => new Promise((resolve, reject) => {
+  const chunks = [];
+  stream.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  stream.on('error', reject);
+});
+
+const postSnowflakeAgentMessage = (endpoint, requestBody) => new Promise((resolve, reject) => {
+  const url = new URL(endpoint);
+  const payload = JSON.stringify(requestBody);
+  const headers = {
+    ...getSnowflakeAuthHeaders(),
+    Accept: 'text/event-stream, application/json',
+    Connection: 'close',
+    'Content-Length': Buffer.byteLength(payload)
+  };
+
+  const upstreamRequest = https.request({
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port || 443,
+    path: `${url.pathname}${url.search}`,
+    headers,
+    timeout: 0
+  }, upstreamResponse => {
+    resolve({ upstreamRequest, upstreamResponse });
+  });
+
+  upstreamRequest.on('error', reject);
+  upstreamRequest.write(payload);
+  upstreamRequest.end();
+});
 
 // ============================================================================
 // API Routes
@@ -370,28 +409,27 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     // Format: https://{host}/api/v2/databases/{db}/schemas/{schema}/agents/{agent}:run
     const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:run`;
     
-    // Make request to Snowflake Agent endpoint
-    const response = await fetch(agentEndpoint, {
-      method: 'POST',
-      headers: getSnowflakeAuthHeaders(),
-      body: JSON.stringify(requestBody),
-    });
+    // Make request to Snowflake Agent endpoint with HTTP/1.1 streaming.
+    // Node fetch can use HTTP/2 here, which has intermittently ended with GOAWAY mid-stream.
+    const { upstreamRequest, upstreamResponse } = await postSnowflakeAgentMessage(agentEndpoint, requestBody);
+    const statusCode = upstreamResponse.statusCode || 500;
+    const statusMessage = upstreamResponse.statusMessage || '';
 
-    if (!response.ok) {
-      const contentType = response.headers.get('content-type') || '';
+    if (statusCode < 200 || statusCode >= 300) {
+      const contentType = upstreamResponse.headers['content-type'] || '';
       
       // Build error message as array of parts (preserves structure better than string with \n\n)
       const errorParts = [
         ERROR_MESSAGES.ERROR_PREFIX,
-        `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`
+        `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${statusCode} ${statusMessage}`
       ];
       
       // For 400/401, skip error details (they're not helpful)
       // For 404 and others, include Snowflake's error details
-      if (response.status !== HTTP_STATUS.BAD_REQUEST && response.status !== HTTP_STATUS.UNAUTHORIZED) {
+      if (statusCode !== HTTP_STATUS.BAD_REQUEST && statusCode !== HTTP_STATUS.UNAUTHORIZED) {
         if (contentType.includes('application/json')) {
           try {
-            const errorData = await response.json();
+            const errorData = JSON.parse(await collectStreamBody(upstreamResponse));
             const details = errorData.error || errorData.message || JSON.stringify(errorData, null, 2);
             errorParts.push(details);
           } catch {
@@ -401,72 +439,66 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
       }
       
       // Add helpful configuration hints based on status code and content type
-      if (response.status === 400) {
+      if (statusCode === 400) {
         errorParts.push('💡 Tip: Check your SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA in the backend .env file. Make sure they exist and you have access to them.');
-      } else if (response.status === 401) {
+      } else if (statusCode === 401) {
         errorParts.push('💡 Tip: Check your SNOWFLAKE_PAT (Personal Access Token) in the backend .env file. Make sure it\'s valid and not expired.');
-      } else if (response.status === 404) {
+      } else if (statusCode === 404) {
         errorParts.push('💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible.');
       }
       
-      console.error('❌ Snowflake Agent API error:', response.status, errorParts.join('\n'));
+      console.error('❌ Snowflake Agent API error:', statusCode, errorParts.join('\n'));
       
-      return res.status(response.status).json({
+      return res.status(statusCode).json({
         errorParts  // Send as array instead of single string
       });
     }
 
     // Check if response is streaming
-    const contentType = response.headers.get('content-type');
+    const contentType = upstreamResponse.headers['content-type'] || '';
     
-    if (contentType?.includes('text/event-stream') || contentType?.includes('stream')) {
+    if (contentType.includes('text/event-stream') || contentType.includes('stream')) {
       // Set headers for SSE streaming
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for nginx
+      res.flushHeaders?.();
       
       console.log('📡 Streaming response from agent...');
-      
-      // Use Node.js streams to pipe the response
-      const reader = response.body.getReader();
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              res.end();
-              console.log('✅ Streaming complete');
-              break;
-            }
-            
-            // Write chunk to response
-            if (!res.write(value)) {
-              // Backpressure - wait for drain
-              await new Promise(resolve => res.once('drain', resolve));
-            }
-          }
-        } catch (error) {
-          console.error('❌ Stream error:', error);
-          if (!res.headersSent) {
-            res.status(500).json({ error: 'Streaming failed' });
-          } else {
-            res.end();
-          }
+
+      upstreamResponse.on('data', chunk => {
+        if (!res.write(chunk)) {
+          upstreamResponse.pause();
+          res.once('drain', () => upstreamResponse.resume());
         }
-      };
-      
-      // Handle client disconnect
-      req.on('close', () => {
-        console.log('⚠️  Client disconnected');
-        reader.cancel();
       });
-      
-      pump();
+
+      upstreamResponse.on('end', () => {
+        res.end();
+        console.log('✅ Streaming complete');
+      });
+
+      upstreamResponse.on('error', error => {
+        console.error('❌ Stream error:', error);
+        if (!res.writableEnded) {
+          writeSseEvent(res, 'response.error', {
+            code: error.code || 'STREAM_INTERRUPTED',
+            message: 'Snowflake stream was interrupted before completion. Please retry the question. If this continues, simplify the request or try again later.'
+          });
+          res.end();
+        }
+      });
+
+      res.on('close', () => {
+        if (!upstreamResponse.complete) {
+          console.log('⚠️  Client disconnected');
+          upstreamRequest.destroy();
+        }
+      });
     } else {
       // Non-streaming response
-      const data = await response.json();
+      const data = JSON.parse(await collectStreamBody(upstreamResponse));
       console.log('✅ Received non-streaming response from agent');
       res.json(data);
     }
@@ -544,4 +576,3 @@ process.on('SIGINT', () => {
   console.log('\n🛑 SIGINT received, shutting down gracefully...');
   process.exit(0);
 });
-

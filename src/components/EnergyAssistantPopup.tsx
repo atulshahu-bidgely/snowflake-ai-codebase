@@ -76,22 +76,65 @@ const CATEGORIES = [
   },
 ];
 
+const DEFAULT_RESULT_LIMIT = 25;
+
+const parseResultCount = (value: string): number | null => {
+  const parsed = parseInt(value.replace(/,/g, ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const isMeasurementUnit = (value: string): boolean =>
+  /^(mw|kw|w|mwh|kwh|wh|kv|v|amps?|a|volts?|percent|%|dollars?|\$|hours?|hrs?|days?|weeks?|months?|years?)\b/i.test(value.trim());
+
+const extractRequestedResultLimit = (text: string): { limit: number; explicit: boolean } => {
+  const normalized = text.replace(/\s+/g, ' ');
+  const commandPattern = /\b(?:top|first|limit(?:ed)?\s+to|show(?:\s+me)?|list|return|get|give\s+me|find|select)\s+([1-9]\d{0,2}(?:,\d{3})*|\d+)\b/gi;
+  const nounPattern = /\b([1-9]\d{0,2}(?:,\d{3})*|\d+)\s+(?:customers?|accounts?|assets?|records?|rows?|users?|meters?|premises|feeders?|substations?|transformers?|candidates?|households?|members?)\b/gi;
+
+  const extractFromPattern = (pattern: RegExp): number | null => {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const nextText = normalized.slice(match.index + match[0].length).trim();
+      if (isMeasurementUnit(nextText)) continue;
+      const count = parseResultCount(match[1]);
+      if (count) return count;
+    }
+    return null;
+  };
+
+  const explicitLimit = extractFromPattern(commandPattern) || extractFromPattern(nounPattern);
+  return explicitLimit
+    ? { limit: explicitLimit, explicit: true }
+    : { limit: DEFAULT_RESULT_LIMIT, explicit: false };
+};
+
 const buildPrompt = (text: string, isAnalysis: boolean, isTarget: boolean = false): string => {
+  const resultLimit = extractRequestedResultLimit(text);
+  const resultLimitText = resultLimit.explicit
+    ? `The user explicitly requested top ${resultLimit.limit} results, so return top ${resultLimit.limit}.`
+    : `The user did not explicitly request a result count, so default to top ${DEFAULT_RESULT_LIMIT}.`;
   if (isTarget) {
-    const numberMatch = text.match(/\b([1-9]\d{0,2}(?:,\d{3})*|\d+)\b/);
-    const tableLimit  = numberMatch ? parseInt(numberMatch[1].replace(/,/g, ''), 10) : 15;
-    return `${text}\n\nIMPORTANT: This is a program targeting question. Provide detailed insights with trends, patterns, and key observations from the data.
-Return:
-1. A detailed analytical summary with trends and insights.
-2. A chart or visualization summarising the result distribution (e.g. by ZIP code, efficiency tier, income band, or other relevant grouping). Show a maximum of 10 data points in the chart — use the top 10 groups by count or value so the chart stays readable.
-3. A markdown table of the top ${tableLimit} most relevant matching records — this table will be downloaded as a CSV by the field team.
-   - Every row must contain real customer/account data values (actual IDs, ZIP codes, metric values, categories, scores).
-   - Do NOT describe columns — return actual data rows only.
+    return `${text}\n\nIMPORTANT: This is a program targeting or top-N question. Provide a detailed but focused summary, then return ranked result rows.
+Result limit rule:
+- Default to top ${DEFAULT_RESULT_LIMIT} rows.
+- ${resultLimitText}
+- Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh", or "30 days" are data values. They should not change the row limit.
+Return only:
+1. A detailed summary with the key trends, drivers, risks, and notable patterns.
+2. One chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points by the most relevant metric.
+3. One markdown table with exactly the top ${resultLimit.limit} matching records when available.
+   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes, metric values, categories, scores, counts, utilization, or capacity.
+   - Do NOT describe columns; return actual data rows only.
    - Choose the most relevant columns dynamically based on the question.
-Do not show sources.`;
+Do not include internal reasoning, query-planning narration, sources, or CSV download text.`;
   }
   if (isAnalysis) {
-    return `${text}\n\nIMPORTANT: This is a consumption analysis question. Include a chart or visualization. Provide detailed data with trends, breakdowns, and insights. Do not show sources.`;
+    return `${text}\n\nIMPORTANT: This is a consumption analysis or trend question. Provide a detailed but focused summary with trends, breakdowns, drivers, and notable patterns.
+Result limit rule:
+- Default ranked outputs to top ${DEFAULT_RESULT_LIMIT} rows.
+- ${resultLimitText}
+- Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh", or "30 days" are data values. They should not change the row limit.
+Include a chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points when the result is a ranked/top-N output. Do not emit an empty chart or an empty table. Do not include internal reasoning, sources, or CSV download text.`;
   }
   return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
 };
@@ -160,12 +203,12 @@ export const EnergyAssistantPopup: React.FC = () => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
     const display = inputText.trim();
-    sendMessage(buildPrompt(display, isAnalysis, isTarget), display, isTarget);
+    sendMessage(buildPrompt(display, isAnalysis, isTarget), display, isTarget, isAnalysis);
     setInputText('');
   }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis, isTarget]);
 
   const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean, catIsTarget: boolean = false) => {
-    sendMessage(buildPrompt(text, catIsAnalysis, catIsTarget), text, catIsTarget);
+    sendMessage(buildPrompt(text, catIsAnalysis, catIsTarget), text, catIsTarget, catIsAnalysis);
   }, [sendMessage]);
 
   const handleCategoryClick = useCallback((index: number) => {
@@ -553,7 +596,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       onToggleThinking={thinkingAccordion.toggle}
                       onToggleCharts={chartsAccordion.toggle}
                       onToggleAnnotations={annotationsAccordion.toggle}
-                      onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget)}
+                      onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget, isAnalysis)}
                     />
                   ))}
                 </Stack>

@@ -52,11 +52,11 @@ export interface ChatMessage {
   }>;
   toolsUsed?: string[];
   isTarget?: boolean;
+  isAnalysis?: boolean;
 }
 
 export interface AccordionState {
   collapsed: Set<string>;
   toggle: (id: string) => void;
 }
-
 
