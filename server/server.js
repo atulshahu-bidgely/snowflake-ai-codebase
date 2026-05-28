@@ -1,9 +1,9 @@
 /**
  * Secure Backend Proxy Server for Snowflake Cortex Agents
- * 
+ *
  * This server acts as a proxy between the frontend and Snowflake APIs,
  * keeping the Personal Access Token (PAT) secure on the server side.
- * 
+ *
  * Security Features:
  * - PAT is never exposed to the browser/client
  * - CORS configured for specific origins
@@ -41,7 +41,7 @@ const validateEnvironment = () => {
   ];
 
   const missing = required.filter(key => !process.env[key]);
-  
+
   if (missing.length > 0) {
     console.error('❌ Missing required environment variables:', missing.join(', '));
     process.exit(1);
@@ -81,22 +81,22 @@ const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-    
+
     // In development, allow localhost
     if (process.env.NODE_ENV === 'development') {
       return callback(null, true);
     }
-    
+
     // In production, check against allowed origins
-    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+    const allowedOrigins = process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
       : [];
-    
+
     // Check for wildcard (allow all origins)
     if (allowedOrigins.includes('*')) {
       return callback(null, true);
     }
-    
+
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -161,7 +161,7 @@ const sanitizeError = (error) => {
       code: 'INTERNAL_ERROR'
     };
   }
-  
+
   // In development, provide more details (but still sanitize sensitive data)
   return {
     message: error.message?.replace(/Bearer\s+[\w-]+/g, 'Bearer [REDACTED]') || 'Unknown error',
@@ -176,17 +176,70 @@ const validateAgentName = (agentName) => {
   if (!agentName || typeof agentName !== 'string') {
     return false;
   }
-  
+
   // Allow alphanumeric, underscore, hyphen, and dot
   const validPattern = /^[a-zA-Z0-9_\-\.]+$/;
   return validPattern.test(agentName) && agentName.length <= CONFIG.MAX_AGENT_NAME_LENGTH;
 };
+
 const uuidv4 = () =>
   'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = Math.random() * 16 | 0;
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+
+// ============================================================================
+// Credit Lookup
+// ============================================================================
+
+const fetchCredits = async () => {
+  if (!process.env.SNOWFLAKE_WAREHOUSE) return null;
+
+  const sql = `SELECT TOKEN_CREDITS FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY WHERE AGENT_NAME = 'ENERGY_AMI_AGENT_DEMO' ORDER BY START_TIME DESC LIMIT 1`;
+  const base = `https://${SNOWFLAKE_CONFIG.host}/api/v2/statements`;
+
+  try {
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: getSnowflakeAuthHeaders(),
+      body: JSON.stringify({
+        statement: sql,
+        warehouse: process.env.SNOWFLAKE_WAREHOUSE || 'wh_agent_demo',
+        role:      process.env.SNOWFLAKE_ROLE || undefined,
+        database:  'SNOWFLAKE',
+        schema:    'ACCOUNT_USAGE',
+        timeout:   60,
+      }),
+    });
+
+    let data = await res.json().catch(() => null);
+    if (!data) return null;
+
+    // Poll if warehouse was still starting up
+    if ((res.status === 408 || data.status === 'RUNNING' || data.status === 'QUEUED') && data.statementHandle) {
+      const pollUrl = `${base}/${data.statementHandle}`;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const poll = await fetch(pollUrl, { headers: getSnowflakeAuthHeaders() });
+        data = await poll.json().catch(() => null);
+        if (!data || data.status === 'FAILED') return null;
+        if (data.status === 'SUCCESS') break;
+      }
+    }
+
+    const rows = data?.data;
+    if (!rows || !rows[0] || rows[0][0] === null) return null;
+
+    const credits = parseFloat(rows[0][0]);
+    if (!credits) return null;
+    return { credits, costUSD: credits * 2.85 };
+  } catch (err) {
+    console.warn('⚠️  fetchCredits failed:', err.message);
+    return null;
+  }
+};
+
 const createLangSmithRun = async ({ req, agentName, requestBody }) => {
  if (!langsmith) return null;
 
@@ -220,7 +273,7 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
  }
 };
 
-const finishLangSmithRun = async (runId, { output, error, status, latencyMs, streamed }) => {
+const finishLangSmithRun = async (runId, { output, error, status, latencyMs, streamed, credits = null }) => {
  if (!langsmith || !runId) return;
 
  try {
@@ -233,9 +286,14 @@ const finishLangSmithRun = async (runId, { output, error, status, latencyMs, str
          status,
          latencyMs,
          streamed,
+         ...(credits ? {
+           snowflake_credits:  credits.credits,
+           snowflake_cost_usd: credits.costUSD,
+         } : {}),
        },
      },
    });
+   if (credits) console.log(`💳 ${credits.credits} credits = $${credits.costUSD.toFixed(4)}`);
  } catch (err) {
    console.warn('⚠️ LangSmith updateRun failed:', err.message);
  }
@@ -249,7 +307,7 @@ const finishLangSmithRun = async (runId, { output, error, status, latencyMs, str
  * Health check endpoint
  */
 app.get('/health', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     version: '1.0.0'
@@ -263,9 +321,9 @@ app.get('/health', (req, res) => {
 app.get('/api/agents', async (req, res) => {
   try {
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents`;
-    
+
     console.log('📡 Fetching agents list from Snowflake...');
-    
+
     const response = await fetch(endpoint, {
       method: 'GET',
       headers: getSnowflakeAuthHeaders(),
@@ -273,15 +331,12 @@ app.get('/api/agents', async (req, res) => {
 
     if (!response.ok) {
       const contentType = response.headers.get('content-type') || '';
-      
-      // Build error message as array of parts (preserves structure better than string with \n\n)
+
       const errorParts = [
         ERROR_MESSAGES.ERROR_PREFIX,
         `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`
       ];
-      
-      // For 400/401, skip error details (they're not helpful)
-      // For 404 and others, include Snowflake's error details
+
       if (response.status !== HTTP_STATUS.BAD_REQUEST && response.status !== HTTP_STATUS.UNAUTHORIZED) {
         if (contentType.includes('application/json')) {
           try {
@@ -293,8 +348,7 @@ app.get('/api/agents', async (req, res) => {
           }
         }
       }
-      
-      // Add helpful configuration hints based on status code
+
       if (response.status === HTTP_STATUS.BAD_REQUEST) {
         errorParts.push(ERROR_MESSAGES.TIPS.BAD_REQUEST);
       } else if (response.status === HTTP_STATUS.UNAUTHORIZED) {
@@ -302,22 +356,21 @@ app.get('/api/agents', async (req, res) => {
       } else if (response.status === HTTP_STATUS.NOT_FOUND) {
         errorParts.push(ERROR_MESSAGES.TIPS.NOT_FOUND);
       }
-      
+
       console.error('❌ Snowflake API error:', response.status, errorParts.join('\n'));
-      
+
       return res.status(response.status).json({
-        errorParts  // Send as array instead of single string
+        errorParts
       });
     }
 
     const data = await response.json();
     console.log(`✅ Successfully fetched ${Array.isArray(data) ? data.length : 'unknown'} agents`);
-    
+
     res.json(data);
   } catch (error) {
     console.error('❌ Error fetching agents:', error.message);
-    
-    // Check if this is a network error (DNS, connection failed, etc.)
+
     if (error.cause?.code === 'ENOTFOUND' || error.message.includes('fetch failed') || error.cause?.code === 'ECONNREFUSED') {
       const errorParts = [
         ERROR_MESSAGES.ERROR_PREFIX,
@@ -326,7 +379,7 @@ app.get('/api/agents', async (req, res) => {
       ];
       return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({ errorParts });
     }
-    
+
     res.status(500).json({ error: sanitizeError(error) });
   }
 });
@@ -338,18 +391,17 @@ app.get('/api/agents', async (req, res) => {
 app.get('/api/agents/:agentName', async (req, res) => {
   try {
     const { agentName } = req.params;
-    
-    // Validate agent name to prevent injection
+
     if (!validateAgentName(agentName)) {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({ 
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
         error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME
       });
     }
-    
+
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}`;
-    
+
     console.log(`📡 Fetching details for agent: ${agentName}...`);
-    
+
     const response = await fetch(endpoint, {
       method: 'GET',
       headers: getSnowflakeAuthHeaders(),
@@ -357,15 +409,12 @@ app.get('/api/agents/:agentName', async (req, res) => {
 
     if (!response.ok) {
       const contentType = response.headers.get('content-type') || '';
-      
-      // Build error message as array of parts (preserves structure better than string with \n\n)
+
       const errorParts = [
         ERROR_MESSAGES.ERROR_PREFIX,
         `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`
       ];
-      
-      // For 400/401, skip error details (they're not helpful)
-      // For 404 and others, include Snowflake's error details
+
       if (response.status !== HTTP_STATUS.BAD_REQUEST && response.status !== HTTP_STATUS.UNAUTHORIZED) {
         if (contentType.includes('application/json')) {
           try {
@@ -377,8 +426,7 @@ app.get('/api/agents/:agentName', async (req, res) => {
           }
         }
       }
-      
-      // Add helpful configuration hints based on status code
+
       if (response.status === HTTP_STATUS.BAD_REQUEST) {
         errorParts.push(ERROR_MESSAGES.TIPS.BAD_REQUEST);
       } else if (response.status === HTTP_STATUS.UNAUTHORIZED) {
@@ -386,22 +434,21 @@ app.get('/api/agents/:agentName', async (req, res) => {
       } else if (response.status === HTTP_STATUS.NOT_FOUND) {
         errorParts.push(ERROR_MESSAGES.TIPS.NOT_FOUND_AGENT(agentName));
       }
-      
+
       console.error('❌ Snowflake API error:', response.status, errorParts.join('\n'));
-      
+
       return res.status(response.status).json({
-        errorParts  // Send as array instead of single string
+        errorParts
       });
     }
 
     const data = await response.json();
     console.log(`✅ Successfully fetched details for agent: ${agentName}`);
-    
+
     res.json(data);
   } catch (error) {
     console.error('❌ Error fetching agent details:', error.message);
-    
-    // Check if this is a network error (DNS, connection failed, etc.)
+
     if (error.cause?.code === 'ENOTFOUND' || error.message.includes('fetch failed') || error.cause?.code === 'ECONNREFUSED') {
       const errorParts = [
         ERROR_MESSAGES.ERROR_PREFIX,
@@ -410,7 +457,7 @@ app.get('/api/agents/:agentName', async (req, res) => {
       ];
       return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({ errorParts });
     }
-    
+
     res.status(500).json({ error: sanitizeError(error) });
   }
 });
@@ -428,17 +475,14 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
    const { agentName } = req.params;
    const requestBody = req.body;
 
-   // Validate inputs
    if (!validateAgentName(agentName)) {
      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
    }
 
-   // Validate request body has messages
    if (!requestBody.messages || !Array.isArray(requestBody.messages) || requestBody.messages.length === 0) {
      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.MESSAGES_REQUIRED });
    }
 
-   // Start LangSmith trace
    langsmithRunId = await createLangSmithRun({ req, agentName, requestBody });
 
    console.log(`💬 Sending message to agent: ${agentName}`);
@@ -511,11 +555,13 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
            const { done, value } = await reader.read();
 
            if (done) {
+             const credits = await fetchCredits();
              await finishLangSmithRun(langsmithRunId, {
                output: fullStreamText,
                status: response.status,
                latencyMs: Date.now() - startTime,
                streamed: true,
+               credits,
              });
 
              res.end();
@@ -647,4 +693,3 @@ process.on('SIGINT', () => {
   console.log('\n🛑 SIGINT received, shutting down gracefully...');
   process.exit(0);
 });
-
