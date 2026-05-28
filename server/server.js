@@ -209,7 +209,7 @@ const fetchCredits = async () => {
         role:      process.env.SNOWFLAKE_ROLE || undefined,
         database:  'SNOWFLAKE',
         schema:    'ACCOUNT_USAGE',
-        timeout:   60,
+        timeout:   300,
       }),
     });
 
@@ -273,30 +273,48 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
  }
 };
 
-const finishLangSmithRun = async (runId, { output, error, status, latencyMs, streamed, credits = null }) => {
+const finishLangSmithRun = async (runId, { output, error, status, latencyMs, streamed }) => {
  if (!langsmith || !runId) return;
 
  try {
    await langsmith.updateRun(runId, {
      outputs: output !== undefined ? { response: output } : undefined,
      error: error ? (typeof error === 'string' ? error : JSON.stringify(error)) : undefined,
-     end_time: new Date().toISOString(),
+     // No end_time here — the background credit job closes the run
      extra: {
-       metadata: {
-         status,
-         latencyMs,
-         streamed,
-         ...(credits ? {
-           snowflake_credits:  credits.credits,
-           snowflake_cost_usd: credits.costUSD,
-         } : {}),
-       },
+       metadata: { status, latencyMs, streamed },
      },
    });
-   if (credits) console.log(`💳 ${credits.credits} credits = $${credits.costUSD.toFixed(4)}`);
  } catch (err) {
    console.warn('⚠️ LangSmith updateRun failed:', err.message);
  }
+};
+
+const closeRunWithCredits = (runId, { output, status, latencyMs }) => {
+ setTimeout(async () => {
+   if (!langsmith || !runId) return;
+   try {
+     const credits = await fetchCredits();
+     await langsmith.updateRun(runId, {
+       outputs: { response: output },
+       end_time: new Date().toISOString(),
+       extra: {
+         metadata: {
+           status,
+           latencyMs,
+           streamed: true,
+           ...(credits ? {
+             snowflake_credits:  credits.credits,
+             snowflake_cost_usd: credits.costUSD,
+           } : {}),
+         },
+       },
+     });
+     if (credits) console.log(`💳 ${credits.credits} credits = $${credits.costUSD.toFixed(4)}`);
+   } catch (err) {
+     console.warn('⚠️ closeRunWithCredits failed:', err.message);
+   }
+ }, 50_000);
 };
 
 // ============================================================================
@@ -555,13 +573,11 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
            const { done, value } = await reader.read();
 
            if (done) {
-             const credits = await fetchCredits();
-             await finishLangSmithRun(langsmithRunId, {
+             // Single updateRun fires after 50s with credits — avoids 409 from double-close
+             closeRunWithCredits(langsmithRunId, {
                output: fullStreamText,
                status: response.status,
                latencyMs: Date.now() - startTime,
-               streamed: true,
-               credits,
              });
 
              res.end();
