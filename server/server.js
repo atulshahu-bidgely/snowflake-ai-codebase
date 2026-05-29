@@ -404,7 +404,7 @@ const finishLangSmithRun = async (runId, { output, error, status, latencyMs, str
  * Polling schedule (seconds after stream end):
  *   10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300
  */
-const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId }) => {
+const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize }) => {
   if (!langsmith || !runId) return;
 
   // No request ID — nothing to look up, close immediately instead of spinning 300s
@@ -438,6 +438,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
               snowflake_request_id: requestId,
               snowflake_credits:    credits.credits,
               snowflake_cost_usd:   credits.costUSD,
+              output_size_mb:       expectedSize,
             },
           },
         });
@@ -455,7 +456,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
         await langsmith.updateRun(runId, {
           outputs: { response: output },
           end_time: streamEndTime,
-          extra: { metadata: { status, latencyMs, streamed: true } },
+          extra: { metadata: { status, latencyMs, streamed: true, output_size_mb: expectedSize } },
         });
       }
     } catch (err) {
@@ -655,12 +656,14 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
 
         if (!runFinalized) {
           runFinalized = true;
+          const expectedSize = (fullStreamText.length * 1e-6).toFixed(4);
           closeRunWithCredits(langsmithRunId, {
             output: fullStreamText,
             status: statusCode,
             latencyMs: Date.now() - startTime,
             streamEndTime: new Date().toISOString(),
             requestId: finalRequestId,
+            expectedSize,
           });
         }
         res.end();
