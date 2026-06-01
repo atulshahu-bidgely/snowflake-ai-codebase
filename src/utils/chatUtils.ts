@@ -1,4 +1,5 @@
 import { CHAT_TEXT } from '../constants/textConstants';
+import { ChartContent } from '../types/chart';
 
 export interface ParsedTable {
   headers: string[];
@@ -60,6 +61,139 @@ export const parseMarkdownTable = (text: string): ParsedTable | null => {
 export const extractTotalCount = (text: string): number | undefined => {
   const match = text.match(/\b([1-9]\d{2,3}(?:,\d{3})*)\b/);
   return match ? parseInt(match[1].replace(/,/g, ''), 10) : undefined;
+};
+
+const getChartRows = (chartSpec: unknown): Record<string, unknown>[] => {
+  if (Array.isArray(chartSpec)) {
+    return chartSpec.filter((row): row is Record<string, unknown> =>
+      row !== null &&
+      typeof row === 'object' &&
+      Object.keys(row).length > 0
+    );
+  }
+
+  const spec = chartSpec as any;
+  const rows = Array.isArray(spec?.data?.values)
+    ? spec.data.values
+    : (Array.isArray(spec?.data) ? spec.data : []);
+
+  return rows.filter((row: unknown): row is Record<string, unknown> =>
+    row !== null &&
+    typeof row === 'object' &&
+    Object.keys(row).length > 0
+  );
+};
+
+const isNumericLike = (value: unknown): boolean => {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false;
+  const normalized = value.replace(/,/g, '').replace(/[%$]/g, '').trim();
+  return /^-?\d+(?:\.\d+)?$/.test(normalized);
+};
+
+const hasNumericMeasure = (rows: Record<string, unknown>[]): boolean => {
+  const excluded = /^(id|name|label|key|zip|zipcode|zip_code|postal|postal_code)$/i;
+  return rows.some(row =>
+    Object.entries(row).some(([key, value]) => !excluded.test(key) && isNumericLike(value))
+  );
+};
+
+export const hasUsableChartData = (chartSpec: unknown): boolean => {
+  const rows = getChartRows(chartSpec);
+  return rows.length > 0 && hasNumericMeasure(rows);
+};
+
+const parseNumericCell = (cell: string): number | null => {
+  const compactRange = cell.match(/~?\s*(-?\d+(?:,\d{3})*(?:\.\d+)?)\s*[–-]\s*-?\d/);
+  const normalized = (compactRange?.[1] ?? cell)
+    .replace(/,/g, '')
+    .replace(/[%$]/g, '')
+    .trim();
+  const match = normalized.match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : null;
+};
+
+const isTimeLikeHeader = (header: string): boolean =>
+  /\b(period|month|date|time|year|quarter|week|day)\b/i.test(header);
+
+export const buildChartFromMarkdownTable = (text: string): ChartContent | null => {
+  const table = parseMarkdownTable(text);
+  if (!table || table.rows.length < 2) return null;
+
+  const xIndex =
+    table.headers.findIndex(isTimeLikeHeader) >= 0
+      ? table.headers.findIndex(isTimeLikeHeader)
+      : 0;
+
+  const numericColumns = table.headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ index }) => index !== xIndex)
+    .map(({ header, index }) => {
+      const values = table.rows.map(row => parseNumericCell(row[index] ?? ''));
+      const validCount = values.filter(value => value !== null).length;
+      return { header, index, validCount };
+    })
+    .filter(column => column.validCount >= Math.max(2, Math.ceil(table.rows.length * 0.6)))
+    .slice(0, 4);
+
+  if (numericColumns.length === 0) return null;
+
+  const data = table.rows
+    .map(row => {
+      const label = row[xIndex]?.trim();
+      if (!label) return null;
+
+      const point: Record<string, string | number> = {
+        [table.headers[xIndex]]: label,
+        name: label,
+      };
+
+      numericColumns.forEach(({ header, index }) => {
+        const value = parseNumericCell(row[index] ?? '');
+        if (value !== null) point[header] = value;
+      });
+
+      return numericColumns.some(({ header }) => typeof point[header] === 'number') ? point : null;
+    })
+    .filter((row): row is Record<string, string | number> => row !== null);
+
+  if (data.length < 2) return null;
+
+  return {
+    type: 'generic',
+    chart_spec: {
+      type: isTimeLikeHeader(table.headers[xIndex]) ? 'line' : 'bar',
+      title: 'Trend Visualization',
+      data,
+    },
+  };
+};
+
+export const buildTableFromChartContent = (charts: ChartContent[]): ParsedTable | null => {
+  const chart = charts.find(item => hasUsableChartData(item.chart_spec));
+  if (!chart) return null;
+
+  const rows = getChartRows(chart.chart_spec);
+  if (rows.length === 0) return null;
+
+  const headers = Array.from(
+    rows.reduce((set, row) => {
+      Object.keys(row).forEach(key => {
+        if (key !== 'id') set.add(key);
+      });
+      return set;
+    }, new Set<string>())
+  );
+
+  if (headers.length === 0) return null;
+
+  const tableRows = rows
+    .map(row => headers.map(header => String(row[header] ?? '').trim()))
+    .filter(row => row.some(cell => cell.length > 0));
+
+  return tableRows.length > 0 ? { headers, rows: tableRows } : null;
 };
 
 const splitThinkingTextIntoParagraphs = (text: string): string[] => {
@@ -177,5 +311,3 @@ export const formatDate = (date: Date): string =>
 
 export const formatTime = (date: Date): string =>
   new Date(date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-
-
