@@ -21,7 +21,13 @@ import { AnnotationsSection } from './AnnotationsSection';
 import { MarkdownFormatter } from './MarkdownFormatter';
 import { CsvSection } from './CsvSection';
 import { MESSAGE_LABELS } from '../../constants/textConstants';
-import { parseMarkdownTable, extractTotalCount } from '../../utils/chatUtils';
+import {
+  buildChartFromMarkdownTable,
+  buildTableFromChartContent,
+  extractTotalCount,
+  hasUsableChartData,
+  parseMarkdownTable,
+} from '../../utils/chatUtils';
 
 // explicit tokens — no MUI theme inheritance
 const BLUE     = '#2563EB';
@@ -106,6 +112,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
   const isUser      = message.sender === 'user';
   const isAssistant = message.sender === 'assistant';
+
+  const markdownTable = isAssistant && message.text ? parseMarkdownTable(message.text) : null;
+  const snowflakeCharts = (message.charts || []).filter(chart => hasUsableChartData(chart.chart_spec));
+  const fallbackChart =
+    isAssistant && (message.isAnalysis || message.isTarget) && message.text
+      ? buildChartFromMarkdownTable(message.text)
+      : null;
+  const localCharts = fallbackChart ? [fallbackChart] : [];
+  const chartsToRender = snowflakeCharts.length > 0 ? snowflakeCharts : localCharts;
+  const targetTable = isAssistant && message.isTarget
+    ? markdownTable || buildTableFromChartContent(chartsToRender)
+    : null;
 
   return (
     <Fade in timeout={300}>
@@ -205,15 +223,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               message.text?.trim() && (
                 <Box>
                   <MarkdownFormatter content={message.text} />
-                  {message.isTarget && message.status === 'sent' && !message.isStreaming && (() => {
-                    const table = parseMarkdownTable(message.text);
-                    if (!table) return null;
+                  {targetTable && message.status === 'sent' && !message.isStreaming && (() => {
                     const totalCount = extractTotalCount(message.text);
                     return (
                       <CsvSection
-                        headers={table.headers}
-                        rows={table.rows}
-                        totalCount={totalCount && totalCount > table.rows.length ? totalCount : undefined}
+                        headers={targetTable.headers}
+                        rows={targetTable.rows}
+                        totalCount={totalCount && totalCount > targetTable.rows.length ? totalCount : undefined}
                       />
                     );
                   })()}
@@ -260,13 +276,12 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
             {/* Charts — rendered after text so they appear where the user is looking */}
             {isAssistant &&
-             message.charts &&
-             message.charts.length > 0 &&
+             chartsToRender.length > 0 &&
              message.status === 'sent' &&
              !message.isStreaming && (
               <ChartsSection
                 messageId={message.id}
-                charts={message.charts}
+                charts={chartsToRender}
                 collapsed={collapsedCharts}
                 onToggle={onToggleCharts}
               />
