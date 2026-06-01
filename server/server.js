@@ -347,11 +347,18 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
   if (!langsmith) return null;
   try {
     const runId = uuidv4();
+    // Category card the user picked in the UI (e.g. "Analyse Trends"); null for free-form queries.
+    // Sent by the frontend in requestBody.metadata.
+    const category = requestBody.metadata?.category || null;
+
     await langsmith.createRun({
       id: runId,
       name: 'snowflake-agent-proxy',
       run_type: 'chain',
       project_name: LANGSMITH_PROJECT,
+      // Surface the category as a run tag so it shows up — and is filterable/groupable —
+      // in the LangSmith run list, not just buried in run metadata.
+      tags: category ? [`category:${category}`] : [],
       inputs: {
         agentName,
         messages: requestBody.messages || [],
@@ -363,6 +370,7 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
           method:    req.method,
           userAgent: req.get('user-agent') || '',
           streamed:  Boolean(requestBody.stream),
+          category,
         },
       },
     });
@@ -572,7 +580,8 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     }
 
     langsmithRunId = await createLangSmithRun({ req, agentName, requestBody });
-    console.log(`💬 Sending message to agent: ${agentName}`);
+    const requestedCategory = requestBody.metadata?.category || null;
+    console.log(`💬 Sending message to agent: ${agentName}${requestedCategory ? ` (category: ${requestedCategory})` : ''}`);
 
     const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:run`;
 
