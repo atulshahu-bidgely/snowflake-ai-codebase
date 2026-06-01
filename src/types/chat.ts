@@ -52,6 +52,7 @@ export interface ChatMessage {
   }>;
   toolsUsed?: string[];
   isTarget?: boolean;
+  isAnalysis?: boolean;
 }
 
 export interface AccordionState {
