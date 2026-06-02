@@ -2,29 +2,25 @@
  * useChatMessages Hook
  * Manages chat message state and streaming logic
  */
-
 import { useState, useCallback, useRef } from 'react';
 import { ChatMessage } from '../types/chat';
 import { ChartContent } from '../types/chart';
 import { config } from '../config/env';
 import { extractSqlQuery, extractVerificationInfo, hasUsableChartData } from '../utils/chatUtils';
 import { ERROR_TEXT, API_DEFAULTS, getApiStatusMessage } from '../constants/textConstants';
-
 const MAX_MESSAGES = 100;
-
 export const useChatMessages = (selectedAgent: string) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-
   const sendMessage = useCallback(async (
     message: string,
     displayText?: string,
     isTarget?: boolean,
-    isAnalysis?: boolean
+    isAnalysis?: boolean,
+    category?: string
   ) => {
     if (!message.trim() || isLoading) return;
-
     const messageId = Date.now().toString();
     const userMessage: ChatMessage = {
       id: messageId + '_user',
@@ -32,7 +28,6 @@ export const useChatMessages = (selectedAgent: string) => {
       sender: 'user',
       timestamp: new Date()
     };
-
     const assistantMessageId = messageId + '_assistant';
     const assistantMessage: ChatMessage = {
       id: assistantMessageId,
@@ -49,20 +44,17 @@ export const useChatMessages = (selectedAgent: string) => {
       isTarget: isTarget ?? false,
       isAnalysis: isAnalysis ?? false,
     };
-
     setMessages(prev => {
       const newMessages = [...prev, userMessage, assistantMessage];
       // Trim to max messages to prevent memory issues
-      return newMessages.length > MAX_MESSAGES 
-        ? newMessages.slice(-MAX_MESSAGES) 
+      return newMessages.length > MAX_MESSAGES
+        ? newMessages.slice(-MAX_MESSAGES)
         : newMessages;
     });
     setIsLoading(true);
-
     // Create AbortController for this request
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-
     try {
       const requestBody = {
         messages: [
@@ -79,12 +71,14 @@ export const useChatMessages = (selectedAgent: string) => {
         tool_choice: {
           type: "auto"
         },
-        stream: true
+        stream: true,
+        // Which category card the user picked (e.g. "Analyse Trends") — forwarded
+        // to the backend so it can be attached to the LangSmith run metadata.
+        metadata: category ? { category } : undefined
       };
-
       // Call backend proxy instead of Snowflake directly (secure: PAT never exposed to browser)
       const backendEndpoint = `${config.backendUrl}/api/agents/${encodeURIComponent(selectedAgent)}/messages`;
-      
+
       const response = await fetch(backendEndpoint, {
         method: 'POST',
         headers: {
@@ -94,7 +88,6 @@ export const useChatMessages = (selectedAgent: string) => {
         body: JSON.stringify(requestBody),
         signal: abortController.signal
       });
-
       if (!response.ok) {
         // Try to get JSON error message from backend
         let errorMessage = `${ERROR_TEXT.API_ERROR}: ${response.status} ${response.statusText}`;
@@ -103,7 +96,7 @@ export const useChatMessages = (selectedAgent: string) => {
           if (contentType?.includes('application/json')) {
             const errorData = await response.json();
             // Backend now sends errorParts as an array to preserve structure
-            errorMessage = errorData.errorParts 
+            errorMessage = errorData.errorParts
               ? errorData.errorParts.join('\n\n')  // Join array with double newlines
               : (errorData.error || errorData.message || errorMessage);
           }
@@ -115,7 +108,6 @@ export const useChatMessages = (selectedAgent: string) => {
         (error as any).fullMessage = errorMessage;
         throw error;
       }
-
       const reader = response.body?.getReader();
       if (!reader) {
         const errorMessage = ERROR_TEXT.NO_READABLE_STREAM;
@@ -123,36 +115,30 @@ export const useChatMessages = (selectedAgent: string) => {
         (error as any).fullMessage = errorMessage;
         throw error;
       }
-
       const decoder = new TextDecoder();
       let assistantText = '';
       let currentEvent = '';
       let streamErrorMessage = '';
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split('\n');
-
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith('data: ')) {
             const dataStr = line.slice(6).trim();
             if (!dataStr || dataStr === '[DONE]') continue;
-
             try {
               const data = JSON.parse(dataStr);
-
               if (currentEvent === 'response.text.delta' && data.text) {
                 assistantText += data.text;
                 const currentText = assistantText;
-                setMessages(prev => prev.map(msg => 
-                  msg.id === assistantMessageId 
-                    ? { 
-                        ...msg, 
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? {
+                        ...msg,
                         text: currentText,
                         status: 'thinking' as const,
                         isStreaming: true
@@ -161,14 +147,14 @@ export const useChatMessages = (selectedAgent: string) => {
                 ));
               } else if (currentEvent === 'response.status' && data.message) {
                 const statusMessage = getApiStatusMessage(data.message);
-                setMessages(prev => prev.map(msg => 
-                  msg.id === assistantMessageId 
-                    ? { 
-                        ...msg, 
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? {
+                        ...msg,
                         status: 'thinking' as const,
                         streamingStatus: statusMessage,
-                        thinkingSteps: (msg.thinkingSteps || []).includes(statusMessage) 
-                          ? msg.thinkingSteps 
+                        thinkingSteps: (msg.thinkingSteps || []).includes(statusMessage)
+                          ? msg.thinkingSteps
                           : [...(msg.thinkingSteps || []), statusMessage],
                         timeline: [
                           ...(msg.timeline || []),
@@ -181,20 +167,20 @@ export const useChatMessages = (selectedAgent: string) => {
                 const toolStatus = API_DEFAULTS.PROCESSING_RESULTS;
                 const sqlQuery = extractSqlQuery(data);
                 const verificationInfo = extractVerificationInfo(data);
-                
-                setMessages(prev => prev.map(msg => 
-                  msg.id === assistantMessageId 
-                    ? { 
-                        ...msg, 
+
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId
+                    ? {
+                        ...msg,
                         status: 'thinking' as const,
                         streamingStatus: toolStatus,
-                        thinkingSteps: (msg.thinkingSteps || []).includes(toolStatus) 
-                          ? msg.thinkingSteps 
+                        thinkingSteps: (msg.thinkingSteps || []).includes(toolStatus)
+                          ? msg.thinkingSteps
                           : [...(msg.thinkingSteps || []), toolStatus],
-                        sqlQueries: sqlQuery 
-                          ? [...(msg.sqlQueries || []), { 
-                              sql: sqlQuery, 
-                              verification: verificationInfo || undefined 
+                        sqlQueries: sqlQuery
+                          ? [...(msg.sqlQueries || []), {
+                              sql: sqlQuery,
+                              verification: verificationInfo || undefined
                             }]
                           : msg.sqlQueries,
                         timeline: [
@@ -208,10 +194,10 @@ export const useChatMessages = (selectedAgent: string) => {
               } else if (currentEvent === 'response.thinking' && data.thinking && data.thinking.text) {
                 const thinkingText = data.thinking.text.trim();
                 if (thinkingText) {
-                  setMessages(prev => prev.map(msg => 
-                    msg.id === assistantMessageId 
-                      ? { 
-                          ...msg, 
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                      ? {
+                          ...msg,
                           status: 'thinking' as const,
                           thinkingTexts: [...(msg.thinkingTexts || []), thinkingText],
                           timeline: [
@@ -229,11 +215,11 @@ export const useChatMessages = (selectedAgent: string) => {
                     if (msg.id === assistantMessageId) {
                       const currentThinkingTexts = msg.thinkingTexts || [];
                       const lastIndex = currentThinkingTexts.length - 1;
-                      
+
                       if (lastIndex >= 0) {
                         const updatedThinkingTexts = [...currentThinkingTexts];
                         updatedThinkingTexts[lastIndex] = updatedThinkingTexts[lastIndex] + deltaText;
-                        
+
                         return {
                           ...msg,
                           status: 'thinking' as const,
@@ -265,8 +251,8 @@ export const useChatMessages = (selectedAgent: string) => {
                       type: 'vega-lite' as const,
                       chart_spec: chartSpec
                     };
-                    
-                    setMessages(prev => prev.map(msg => 
+
+                    setMessages(prev => prev.map(msg =>
                       msg.id === assistantMessageId
                         ? {
                             ...msg,
@@ -288,7 +274,7 @@ export const useChatMessages = (selectedAgent: string) => {
                   try {
                     // Extract annotation from nested structure
                     const annotationData = data.annotation || data;
-                    
+
                     const annotation = {
                       type: annotationData.type || 'citation',
                       start_index: data.start_index,
@@ -303,18 +289,18 @@ export const useChatMessages = (selectedAgent: string) => {
                       search_result_id: annotationData.search_result_id,
                       index: annotationData.index
                     };
-                    
-                    setMessages(prev => prev.map(msg => 
+
+                    setMessages(prev => prev.map(msg =>
                       msg.id === assistantMessageId
                         ? {
                             ...msg,
                             annotations: [...(msg.annotations || []), annotation],
                             timeline: [
                               ...(msg.timeline || []),
-                              { 
-                                type: 'annotation', 
-                                content: `Citation: ${annotation.title || 'Reference'}`, 
-                                timestamp: new Date() 
+                              {
+                                type: 'annotation',
+                                content: `Citation: ${annotation.title || 'Reference'}`,
+                                timestamp: new Date()
                               }
                             ]
                           }
@@ -339,31 +325,28 @@ export const useChatMessages = (selectedAgent: string) => {
           }
         }
       }
-
       // Mark message as complete
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId 
-          ? { 
-              ...msg, 
-              text: assistantText || ERROR_TEXT.RESPONSE_COMPLETED, 
+      setMessages(prev => prev.map(msg =>
+        msg.id === assistantMessageId
+          ? {
+              ...msg,
+              text: assistantText || ERROR_TEXT.RESPONSE_COMPLETED,
               status: 'sent' as const,
               isStreaming: false,
               streamingStatus: undefined,
             }
           : msg
       ));
-
       return { success: true, assistantMessageId };
-
     } catch (error) {
       // Handle abort error specifically
       if (error instanceof Error && error.name === 'AbortError') {
-        setMessages(prev => prev.map(msg => 
-          msg.id === assistantMessageId 
-            ? { 
-                ...msg, 
-                text: '', 
-                status: 'error' as const, 
+        setMessages(prev => prev.map(msg =>
+          msg.id === assistantMessageId
+            ? {
+                ...msg,
+                text: '',
+                status: 'error' as const,
                 error: `${ERROR_TEXT.ERROR_PREFIX}\n\n${ERROR_TEXT.USER_CANCELED}`,
                 isStreaming: false,
                 streamingStatus: undefined
@@ -373,9 +356,9 @@ export const useChatMessages = (selectedAgent: string) => {
       } else {
         // Check if this is a network error (connection lost during streaming)
         let errorMessage: string;
-        if (error instanceof TypeError && 
-            (error.message.includes('network') || 
-             error.message.includes('fetch') || 
+        if (error instanceof TypeError &&
+            (error.message.includes('network') ||
+             error.message.includes('fetch') ||
              error.message.includes('Failed to fetch'))) {
           // Network error during streaming - format with ERROR_PREFIX and tips
           errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n\nConnection lost during streaming.\n\n💡 Tip: The backend server at ${config.backendUrl} stopped or crashed, network connection was interrupted, or the backend server is no longer running.`;
@@ -383,13 +366,13 @@ export const useChatMessages = (selectedAgent: string) => {
           // Use fullMessage property to preserve \n\n (Error.message normalizes newlines)
           errorMessage = error instanceof Error ? ((error as any).fullMessage || error.message) : ERROR_TEXT.UNKNOWN_ERROR;
         }
-        
-        setMessages(prev => prev.map(msg => 
-          msg.id === assistantMessageId 
-          ? { 
-              ...msg, 
-              text: '', 
-              status: 'error' as const, 
+
+        setMessages(prev => prev.map(msg =>
+          msg.id === assistantMessageId
+          ? {
+              ...msg,
+              text: '',
+              status: 'error' as const,
               error: errorMessage,
               isStreaming: false,
               streamingStatus: undefined
@@ -403,24 +386,21 @@ export const useChatMessages = (selectedAgent: string) => {
       abortControllerRef.current = null;
     }
   }, [isLoading, selectedAgent]);
-
   const cancelRequest = useCallback(() => {
     if (abortControllerRef.current && isLoading) {
       abortControllerRef.current.abort();
     }
   }, [isLoading]);
-
   const clearMessages = useCallback(() => {
     // Cancel any ongoing request
     if (abortControllerRef.current && isLoading) {
       abortControllerRef.current.abort();
     }
-    
+
     setMessages([]);
     setIsLoading(false);
     abortControllerRef.current = null;
   }, [isLoading]);
-
   return {
     messages,
     isLoading,

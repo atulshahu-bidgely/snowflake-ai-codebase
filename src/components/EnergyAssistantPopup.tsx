@@ -122,11 +122,12 @@ Result limit rule:
 Return only:
 1. A detailed summary with the key trends, drivers, risks, and notable patterns.
 2. One chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points by the most relevant metric.
-3. One markdown table with exactly the top ${resultLimit.limit} matching records when available.
-   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes, metric values, categories, scores, counts, utilization, or capacity.
-   - Do NOT describe columns; return actual data rows only.
-   - Choose the most relevant columns dynamically based on the question.
-Do not include internal reasoning, query-planning narration, sources, or CSV download text.`;
+	3. One markdown table with exactly the top ${resultLimit.limit} matching records when available.
+	   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes, metric values, categories, scores, counts, utilization, or capacity.
+	   - Preserve UUIDs, customer IDs, account IDs, meter IDs, premise IDs, and asset IDs exactly as returned. Do not shorten, mask, abbreviate, or replace any identifier with ellipses.
+	   - Do NOT describe columns; return actual data rows only.
+	   - Choose the most relevant columns dynamically based on the question.
+	Do not include internal reasoning, query-planning narration, sources, or CSV download text.`;
   }
   if (isAnalysis) {
     return `${text}\n\nIMPORTANT: This is a consumption analysis or trend question. Provide a detailed but focused summary with trends, breakdowns, drivers, and notable patterns.
@@ -198,17 +199,18 @@ export const EnergyAssistantPopup: React.FC = () => {
 
   const isAnalysis = selectedCategory !== null ? CATEGORIES[selectedCategory].isAnalysis : false;
   const isTarget   = selectedCategory !== null ? (CATEGORIES[selectedCategory] as any).isTarget ?? false : false;
+  const categoryLabel = selectedCategory !== null ? CATEGORIES[selectedCategory].label : undefined;
 
   const handleSubmit = useCallback(() => {
     if (isLoading) { cancelRequest(); return; }
     if (!inputText.trim()) return;
     const display = inputText.trim();
-    sendMessage(buildPrompt(display, isAnalysis, isTarget), display, isTarget, isAnalysis);
+    sendMessage(buildPrompt(display, isAnalysis, isTarget), display, isTarget, isAnalysis, categoryLabel);
     setInputText('');
-  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis, isTarget]);
+  }, [inputText, isLoading, sendMessage, cancelRequest, isAnalysis, isTarget, categoryLabel]);
 
-  const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean, catIsTarget: boolean = false) => {
-    sendMessage(buildPrompt(text, catIsAnalysis, catIsTarget), text, catIsTarget, catIsAnalysis);
+  const handleQuestionClick = useCallback((text: string, catIsAnalysis: boolean, catIsTarget: boolean = false, catLabel?: string) => {
+    sendMessage(buildPrompt(text, catIsAnalysis, catIsTarget), text, catIsTarget, catIsAnalysis, catLabel);
   }, [sendMessage]);
 
   const handleCategoryClick = useCallback((index: number) => {
@@ -508,7 +510,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                         <Box
                           key={qi}
                           component="button"
-                          onClick={() => handleQuestionClick(q, activeCat.isAnalysis, (activeCat as any).isTarget ?? false)}
+                          onClick={() => handleQuestionClick(q, activeCat.isAnalysis, (activeCat as any).isTarget ?? false, activeCat.label)}
                           sx={{
                             display: 'flex', alignItems: 'center', gap: '12px',
                             px: '18px', py: '14px',
@@ -596,7 +598,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       onToggleThinking={thinkingAccordion.toggle}
                       onToggleCharts={chartsAccordion.toggle}
                       onToggleAnnotations={annotationsAccordion.toggle}
-                      onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget, isAnalysis)}
+                      onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget, isAnalysis, categoryLabel)}
                     />
                   ))}
                 </Stack>
