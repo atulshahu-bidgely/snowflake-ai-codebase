@@ -12,7 +12,6 @@ import {
 import {
   ContentCopy as CopyIcon,
   Replay as ReplayIcon,
-  FileDownload as DownloadIcon,
 } from '@mui/icons-material';
 import { ChatMessage as ChatMessageType } from '../../types/chat';
 import { ThinkingSteps } from './ThinkingSteps';
@@ -33,7 +32,6 @@ import {
 const BLUE     = '#2563EB';
 const BLUE_BG  = '#EFF6FF';
 const BLUE_SHD = 'rgba(37,99,235,0.28)';
-const TEXT     = '#1E293B';
 const TEXT2    = '#64748B';
 const BORDER   = '#E2E8F0';
 const AMBER_BG = '#FFFBEB';
@@ -84,34 +82,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     if (onResendMessage && message.text) onResendMessage(message.text);
   };
 
-  const hasTable = Boolean(
-    message.text &&
-    /\|.+\|/.test(message.text) &&
-    /\|\s*[-:]+\s*\|/.test(message.text)
-  );
-
-  const handleDownloadCsv = () => {
-    if (!message.text) return;
-    const lines = message.text.split('\n');
-    const tableLines = lines.filter(
-      l => l.trim().startsWith('|') && !/^\|\s*[-:]+[\s|:-]*\|/.test(l.trim())
-    );
-    if (tableLines.length === 0) return;
-    const csvRows = tableLines.map(line =>
-      line.trim().replace(/^\||\|$/g, '').split('|').map(cell => {
-        const v = cell.trim();
-        return v.includes(',') || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v;
-      }).join(',')
-    );
-    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = 'energy_data.csv'; a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const isUser      = message.sender === 'user';
   const isAssistant = message.sender === 'assistant';
+  const markdownTable = isAssistant && message.text ? parseMarkdownTable(message.text) : null;
+  const snowflakeCharts = (message.charts || []).filter(chart => hasUsableChartData(chart.chart_spec));
+  const fallbackChart =
+    isAssistant && (message.isAnalysis || message.isTarget) && message.text
+      ? buildChartFromMarkdownTable(message.text)
+      : null;
+  const localCharts = fallbackChart ? [fallbackChart] : [];
+  const chartsToRender = snowflakeCharts.length > 0 ? snowflakeCharts : localCharts;
+  const targetTable = isAssistant && message.isTarget
+    ? markdownTable || buildTableFromChartContent(chartsToRender)
+    : null;
 
   const markdownTable = isAssistant && message.text ? parseMarkdownTable(message.text) : null;
   const snowflakeCharts = (message.charts || []).filter(chart => hasUsableChartData(chart.chart_spec));
@@ -233,32 +216,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                       />
                     );
                   })()}
-                  {/* Prominent Download CSV button — shown inline when a table is present */}
-                  {hasTable && message.status === 'sent' && !message.isStreaming && (
-                    <Box
-                      component="button"
-                      onClick={handleDownloadCsv}
-                      sx={{
-                        mt: 2,
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        px: '16px', py: '9px',
-                        bgcolor: '#059669',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        transition: 'all 0.15s',
-                        boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
-                        '&:hover': { bgcolor: '#047857', boxShadow: '0 4px 12px rgba(5,150,105,0.4)' },
-                        '&:active': { transform: 'scale(0.98)' },
-                      }}
-                    >
-                      <DownloadIcon sx={{ fontSize: 16, color: 'white' }} />
-                      <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'white', letterSpacing: '-0.01em' }}>
-                        Download CSV
-                      </Typography>
-                    </Box>
-                  )}
                   {message.status === 'sent' &&
                    !message.isStreaming &&
                    message.annotations &&
@@ -401,17 +358,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 <CopyIcon sx={{ fontSize: 15 }} />
               </IconButton>
             </Tooltip>
-            {hasTable && (
-              <Tooltip title="Download as CSV" arrow>
-                <IconButton
-                  onClick={handleDownloadCsv}
-                  size="small"
-                  sx={{ color: TEXT2, p: '4px', borderRadius: '6px', '&:hover': { color: BLUE, bgcolor: BLUE_BG } }}
-                >
-                  <DownloadIcon sx={{ fontSize: 15 }} />
-                </IconButton>
-              </Tooltip>
-            )}
           </Stack>
         )}
       </Box>

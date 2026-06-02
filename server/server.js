@@ -233,6 +233,44 @@ const replyNetworkError = (res) => {
   return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({ errorParts });
 };
 
+const writeSseEvent = (res, event, data) => {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+
+const collectStreamBody = (stream) => new Promise((resolve, reject) => {
+  const chunks = [];
+  stream.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  stream.on('error', reject);
+});
+
+const postSnowflakeAgentMessage = (endpoint, requestBody) => new Promise((resolve, reject) => {
+  const url = new URL(endpoint);
+  const payload = JSON.stringify(requestBody);
+  const headers = {
+    ...getSnowflakeAuthHeaders(),
+    Accept: 'text/event-stream, application/json',
+    Connection: 'close',
+    'Content-Length': Buffer.byteLength(payload)
+  };
+
+  const upstreamRequest = https.request({
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port || 443,
+    path: `${url.pathname}${url.search}`,
+    headers,
+    timeout: 0
+  }, upstreamResponse => {
+    resolve({ upstreamRequest, upstreamResponse });
+  });
+
+  upstreamRequest.on('error', reject);
+  upstreamRequest.write(payload);
+  upstreamRequest.end();
+});
+
 // ============================================================================
 // Credit Lookup
 // ============================================================================
@@ -590,21 +628,42 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     const statusCode = upstreamResponse.statusCode || 500;
     const statusMessage = upstreamResponse.statusMessage || '';
 
-    // ── Error path ───────────────────────────────────────────────────────────
     if (statusCode < 200 || statusCode >= 300) {
-      let errorBody = null;
       const contentType = upstreamResponse.headers['content-type'] || '';
-      if (contentType.includes('application/json') &&
-          statusCode !== HTTP_STATUS.BAD_REQUEST && statusCode !== HTTP_STATUS.UNAUTHORIZED) {
-        try {
-          errorBody = JSON.parse(await collectStreamBody(upstreamResponse));
-        } catch { /* ignore */ }
+      
+      // Build error message as array of parts (preserves structure better than string with \n\n)
+      const errorParts = [
+        ERROR_MESSAGES.ERROR_PREFIX,
+        `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${statusCode} ${statusMessage}`
+      ];
+      
+      // For 400/401, skip error details (they're not helpful)
+      // For 404 and others, include Snowflake's error details
+      if (statusCode !== HTTP_STATUS.BAD_REQUEST && statusCode !== HTTP_STATUS.UNAUTHORIZED) {
+        if (contentType.includes('application/json')) {
+          try {
+            const errorData = JSON.parse(await collectStreamBody(upstreamResponse));
+            const details = errorData.error || errorData.message || JSON.stringify(errorData, null, 2);
+            errorParts.push(details);
+          } catch {
+            // JSON parsing failed, use default message
+          }
+        }
       }
-
-      const errorParts = buildSnowflakeErrorParts(statusCode, statusMessage, errorBody, {
-        400: '💡 Tip: Check your SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA in the backend .env file. Make sure they exist and you have access to them.',
-        401: "💡 Tip: Check your SNOWFLAKE_PAT (Personal Access Token) in the backend .env file. Make sure it's valid and not expired.",
-        404: '💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible.',
+      
+      // Add helpful configuration hints based on status code and content type
+      if (statusCode === 400) {
+        errorParts.push('💡 Tip: Check your SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA in the backend .env file. Make sure they exist and you have access to them.');
+      } else if (statusCode === 401) {
+        errorParts.push('💡 Tip: Check your SNOWFLAKE_PAT (Personal Access Token) in the backend .env file. Make sure it\'s valid and not expired.');
+      } else if (statusCode === 404) {
+        errorParts.push('💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible.');
+      }
+      
+      console.error('❌ Snowflake Agent API error:', statusCode, errorParts.join('\n'));
+      
+      return res.status(statusCode).json({
+        errorParts  // Send as array instead of single string
       });
 
       console.error('❌ Snowflake Agent API error:', statusCode, errorParts.join('\n'));
@@ -821,29 +880,13 @@ const server = app.listen(PORT, () => {
   console.log('\n✨ Ready to accept requests!\n');
 });
 
-// ── Graceful shutdown ─────────────────────────────────────────────────────────
-// Stops accepting new connections and lets in-flight requests finish.
-// Note: pending credit-polling timers (up to +300s) are not awaited —
-// on a redeploy those LangSmith runs will close without credit data.
-let shuttingDown = false;
-const shutdown = (signal) => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`\n🛑 ${signal} received, shutting down gracefully...`);
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('\n🛑 SIGTERM received, shutting down gracefully...');
+  process.exit(0);
+});
 
-  const forceExit = setTimeout(() => {
-    console.warn('⚠️ Forced shutdown — connections did not drain in time');
-    process.exit(1);
-  }, 10_000);
-  forceExit.unref(); // don't keep the event loop alive
-
-  server.close((err) => {
-    clearTimeout(forceExit);
-    if (err) { console.error('❌ Error during shutdown:', err.message); process.exit(1); }
-    console.log('✅ All connections closed, exiting.');
-    process.exit(0);
-  });
-};
-
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGINT', () => {
+  console.log('\n🛑 SIGINT received, shutting down gracefully...');
+  process.exit(0);
+});
