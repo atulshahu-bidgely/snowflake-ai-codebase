@@ -122,11 +122,12 @@ Result limit rule:
 Return only:
 1. A detailed summary with the key trends, drivers, risks, and notable patterns.
 2. One chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points by the most relevant metric.
-3. One markdown table with exactly the top ${resultLimit.limit} matching records when available.
-   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes, metric values, categories, scores, counts, utilization, or capacity.
-   - Do NOT describe columns; return actual data rows only.
-   - Choose the most relevant columns dynamically based on the question.
-Do not include internal reasoning, query-planning narration, sources, or CSV download text.`;
+	3. One markdown table with exactly the top ${resultLimit.limit} matching records when available.
+	   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes, metric values, categories, scores, counts, utilization, or capacity.
+	   - Preserve UUIDs, customer IDs, account IDs, meter IDs, premise IDs, and asset IDs exactly as returned. Do not shorten, mask, abbreviate, or replace any identifier with ellipses.
+	   - Do NOT describe columns; return actual data rows only.
+	   - Choose the most relevant columns dynamically based on the question.
+	Do not include internal reasoning, query-planning narration, sources, or CSV download text.`;
   }
   if (isAnalysis) {
     return `${text}\n\nIMPORTANT: This is a consumption analysis or trend question. Provide a detailed but focused summary with trends, breakdowns, drivers, and notable patterns.
