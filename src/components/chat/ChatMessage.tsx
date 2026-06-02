@@ -96,18 +96,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     ? markdownTable || buildTableFromChartContent(chartsToRender)
     : null;
 
-  const markdownTable = isAssistant && message.text ? parseMarkdownTable(message.text) : null;
-  const snowflakeCharts = (message.charts || []).filter(chart => hasUsableChartData(chart.chart_spec));
-  const fallbackChart =
-    isAssistant && (message.isAnalysis || message.isTarget) && message.text
-      ? buildChartFromMarkdownTable(message.text)
-      : null;
-  const localCharts = fallbackChart ? [fallbackChart] : [];
-  const chartsToRender = snowflakeCharts.length > 0 ? snowflakeCharts : localCharts;
-  const targetTable = isAssistant && message.isTarget
-    ? markdownTable || buildTableFromChartContent(chartsToRender)
-    : null;
-
   return (
     <Fade in timeout={300}>
       <Box
