@@ -27,6 +27,9 @@ const https = require('https');
 const { Client } = require('langsmith');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const { HTTP_STATUS, ERROR_MESSAGES, CONFIG } = require('./constants');
+const LEFT_COST = Number(process.env.LEFT_COST || 1);
+const MIDDLE_COST = Number(process.env.MIDDLE_COST || 10);
+const RIGHT_COST = Number(process.env.RIGHT_COST || 20);
 
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
@@ -380,7 +383,7 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
     // Category card the user picked in the UI (e.g. "Analyse Trends"); null for free-form queries.
     // Sent by the frontend in requestBody.metadata.
     const category = requestBody.metadata?.category || null;
-
+    const USER = process.env.USER_ID || 'unknown_user';
     await langsmith.createRun({
       id: runId,
       name: 'snowflake-agent-proxy',
@@ -391,11 +394,11 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
       project_name: LANGSMITH_PROJECT,
       // Surface the category as a run tag so it shows up — and is filterable/groupable —
       // in the LangSmith run list, not just buried in run metadata.
-      tags: category ? [`category:${category}`] : [],
-      inputs: {
-        agentName,
-        messages: requestBody.messages || [],
-        metadata: requestBody.metadata || {},
+      tags: category ? [`category:${category}`, `User ID = ${USER}`] : [`User ID = ${USER}`],
+        inputs: {
+          agentName,
+          messages: requestBody.messages || [],
+          metadata: requestBody.metadata || {},
       },
       extra: {
         metadata: {
@@ -419,18 +422,29 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
  * For streaming successes, use closeRunWithCredits instead — it waits for
  * credit data so both cost and output land in a single update (avoiding a 409).
  */
-const finishLangSmithRun = async (runId, { output, error, status, latencyMs, streamed }) => {
-  if (!langsmith || !runId) return;
-  try {
-    await langsmith.updateRun(runId, {
-      outputs: output !== undefined ? { response: output } : undefined,
-      error: error ? (typeof error === 'string' ? error : JSON.stringify(error)) : undefined,
-      extra: { metadata: { status, latencyMs, streamed } },
-    });
-  } catch (err) {
-    console.warn('⚠️ LangSmith updateRun failed:', err.message);
-  }
+const finishLangSmithRun = async (
+ runId,
+ { output, error, status, latencyMs, streamed, metadata = {} }
+) => {
+ if (!langsmith || !runId) return;
+ try {
+ await langsmith.updateRun(runId, {
+ outputs: output !== undefined ? { response: output } : undefined,
+ error: error ? (typeof error === 'string' ? error : JSON.stringify(error)) : undefined,
+ extra: {
+ metadata: {
+ status,
+ latencyMs,
+ streamed,
+ ...metadata,
+ },
+ },
+ });
+ } catch (err) {
+ console.warn('⚠️ LangSmith updateRun failed:', err.message);
+ }
 };
+
 
 /**
  * Builds the usage_metadata object LangSmith reads (from run outputs) to populate
@@ -466,7 +480,7 @@ const buildUsageMetadata = ({ inputTokens, outputTokens, costUSD } = {}) => {
  * Polling schedule (seconds after stream end):
  *   10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300
  */
-const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens }) => {
+const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens, creditsLeft }) => {
   if (!langsmith || !runId) return;
 
   // No request ID — nothing to look up, close immediately instead of spinning 300s
@@ -503,6 +517,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
               snowflake_credits:    credits.credits,
               snowflake_cost_usd:   credits.costUSD,
               output_size_mb:       expectedSize,
+              credits_left:         creditsLeft,
             },
           },
         });
@@ -640,6 +655,132 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     const requestedCategory = requestBody.metadata?.category || null;
     console.log(`💬 Sending message to agent: ${agentName}${requestedCategory ? ` (category: ${requestedCategory})` : ''}`);
 
+    // HERE THE CATEGORY IS RETRIEVED BUT THE REQUEST TO THE BOT ITSELF IS NOT SENT
+    // ── User credit lookup ───────────────────────────────────────────────────
+    // Reads user_tracker.csv (sibling of the server/ folder). If the user is
+    // not found they are added with 100 credits so future requests can deduct.
+   const normalizeCategory = (value) => String(value || '').trim().toLowerCase();
+
+const getCategoryCost = (category) => {
+ const normalized = normalizeCategory(category);
+
+ if (normalized === 'get data') return LEFT_COST;
+ if (normalized === 'analyze trends') return MIDDLE_COST;
+ if (normalized === 'analyse trends') return MIDDLE_COST;
+ if (normalized === 'target programs') return RIGHT_COST;
+
+ return 20;
+};
+
+// ── User credit lookup and deduction ─────────────────────────────────────
+const USER_TRACKER_PATH = path.resolve(__dirname, '../user_tracker.csv');
+let creditsLeft = 0;
+let chargedCost = 0;
+let hasEnoughCredits = true;
+
+try {
+ const fs = require('fs');
+ const csvRaw = fs.existsSync(USER_TRACKER_PATH)
+ ? fs.readFileSync(USER_TRACKER_PATH, 'utf8')
+ : 'user_id,credits\n';
+
+ const csvLines = csvRaw.trim().split('\n').filter(Boolean);
+ const header = csvLines[0] || 'user_id,credits';
+ const dataLines = csvLines.slice(1);
+
+ const userId = process.env.USER_ID || 'unknown_user';
+ const category = requestBody.metadata?.category || '';
+ chargedCost = getCategoryCost(category);
+
+ let userFound = false;
+ let updatedDataLines = [...dataLines];
+
+ for (let i = 0; i < updatedDataLines.length; i++) {
+ const [csvUserId, csvCredits] = updatedDataLines[i].split(',');
+
+ if (csvUserId.trim() !== userId) continue;
+
+ userFound = true;
+ const currentCredits = parseFloat(csvCredits) || 0;
+
+ if (currentCredits < chargedCost) {
+  hasEnoughCredits = false;
+  creditsLeft = 0;
+  chargedCost = 0;
+
+  console.log(
+   `❌ Insufficient credits for user ${userId} | category: ${category || 'none'} | current: ${currentCredits}`
+  );
+ } else {
+  const updatedCredits = currentCredits - chargedCost;
+  creditsLeft = updatedCredits;
+
+  updatedDataLines[i] = `${userId},${updatedCredits}`;
+
+  console.log(
+   `👤 User ${userId} found | category: ${category || 'none'} | charge: ${chargedCost} | credits left: ${creditsLeft}`
+  );
+ }
+
+ break;
+ }
+
+ if (!userFound) {
+  const startingCredits = 100;
+
+  if (startingCredits < chargedCost) {
+   hasEnoughCredits = false;
+   creditsLeft = 0;
+   chargedCost = 0;
+
+   console.log(
+    `❌ Insufficient credits for new user ${userId} | category: ${category || 'none'} | current: ${startingCredits}`
+   );
+  } else {
+   const updatedCredits = startingCredits - chargedCost;
+   creditsLeft = updatedCredits;
+
+   updatedDataLines.push(`${userId},${updatedCredits}`);
+
+   console.log(
+    `👤 New user ${userId} added | category: ${category || 'none'} | charge: ${chargedCost} | credits left: ${creditsLeft}`
+   );
+  }
+ }
+
+ // only write CSV if credits are sufficient
+ if (hasEnoughCredits) {
+  const updatedCsv = [header, ...updatedDataLines].join('\n') + '\n';
+  fs.writeFileSync(USER_TRACKER_PATH, updatedCsv, 'utf8');
+ }
+} catch (csvErr) {
+ console.warn('⚠️ Could not read/write user_tracker.csv:', csvErr.message);
+}
+
+if (!hasEnoughCredits) {
+ await finishLangSmithRun(langsmithRunId, {
+ output: { message: 'Insufficient credits' },
+ status: 402,
+ latencyMs: Date.now() - startTime,
+ streamed: false,
+ metadata: {
+  credits_left: 0,
+  snowflake_cost_usd: 0,
+  has_enough_credits: false,
+  charged_cost: 0,
+ },
+});
+
+
+ return res.status(402).json({
+  message: 'Insufficient credits',
+  creditsLeft: 0,
+  chargedCost: 0,
+  hasEnoughCredits: false,
+ });
+}
+
+ // ─────────────────────────────────────────────────────────────────────────
     const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:run`;
 
     // HTTP/1.1 via raw https — avoids Snowflake GOAWAY frames that occur with HTTP/2
@@ -666,8 +807,18 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
 
       console.error('❌ Snowflake Agent API error:', statusCode, errorParts.join('\n'));
       await finishLangSmithRun(langsmithRunId, {
-        error: { errorParts }, status: statusCode, latencyMs: Date.now() - startTime, streamed: false,
-      });
+ error: { errorParts },
+ status: statusCode,
+ latencyMs: Date.now() - startTime,
+ streamed: false,
+ metadata: {
+  credits_left: creditsLeft,
+  snowflake_cost_usd: 0,
+  has_enough_credits: true,
+  charged_cost: chargedCost,
+ },
+});
+
       return res.status(statusCode).json({ errorParts });
     }
 
@@ -738,6 +889,7 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
             expectedSize,
             inputTokens,
             outputTokens,
+            creditsLeft,
           });
         }
         res.end();
@@ -765,6 +917,7 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
               requestId: finalRequestId,
               inputTokens,
               outputTokens,
+              creditsLeft,
             });
           }
           return;
@@ -811,6 +964,7 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
           requestId: finalRequestId,
           inputTokens,
           outputTokens,
+          creditsLeft,
         });
       });
 
@@ -819,16 +973,38 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
       const data = JSON.parse(await collectStreamBody(upstreamResponse));
       console.log('✅ Received non-streaming response from agent');
       await finishLangSmithRun(langsmithRunId, {
-        output: data, status: statusCode, latencyMs: Date.now() - startTime, streamed: false,
-      });
+ output: data,
+ status: statusCode,
+ latencyMs: Date.now() - startTime,
+ streamed: false,
+ metadata: {
+  credits_left: creditsLeft,
+  snowflake_cost_usd: 0,
+  has_enough_credits: true,
+  charged_cost: chargedCost,
+ },
+});
+
       res.json(data);
     }
 
   } catch (error) {
-    console.error('❌ Error sending message to agent:', error.message);
-    await finishLangSmithRun(langsmithRunId, {
-      error: sanitizeError(error), status: 500, latencyMs: Date.now() - startTime, streamed: false,
-    });
+ console.error('❌ Error sending message to agent:', error.message);
+
+ await finishLangSmithRun(langsmithRunId, {
+  error: sanitizeError(error),
+  status: 500,
+  latencyMs: Date.now() - startTime,
+  streamed: false,
+  metadata: {
+   credits_left: 0,
+   snowflake_cost_usd: 0,
+   has_enough_credits: false,
+   charged_cost: 0,
+  },
+ });
+
+
 
     if (!res.headersSent) {
       // Raw https exposes connection failures on error.code; fetch puts them on error.cause.code

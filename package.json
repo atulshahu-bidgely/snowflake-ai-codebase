@@ -46,7 +46,7 @@
     "start": "craco start",
     "start:server": "node server/server.js",
     "start:dev": "NODE_ENV=development npm run start:server",
-    "start:all": "concurrently \"npm run start:server\" \"npm start\"",
+    "start:all": "concurrently \"npm run start:server\" \"node server/background_processes.js\" \"npm start\"",
     "build": "GENERATE_SOURCEMAP=false craco build",
     "build:analyze": "npm run build && npx serve -s build",
     "test": "craco test",
