@@ -263,6 +263,36 @@ const extractRequestIdFromSSE = (sseText) => {
 };
 
 /**
+ * Extracts input/output token counts from the SSE stream.
+ *
+ * Token usage lives at `metadata.usage.tokens_consumed[0]` of the agent's `response`
+ * event. We scan `data:` lines directly (CRLF-safe) and key off that exact path
+ * rather than the event name — the previous `/\n\n+/` event-splitting failed on
+ * `\r\n` streams (events never split, so the last data line — `response.completed`,
+ * which has no usage — was read instead of the `response` event). No recursive scan,
+ * so unrelated numbers can't be mistaken for tokens. Last match wins.
+ */
+const extractTokensFromSSE = (sseText) => {
+  let result = { inputTokens: null, outputTokens: null };
+  const pick = (v) => (typeof v === 'number' ? v : (v && typeof v.total === 'number' ? v.total : null));
+
+  for (const raw of sseText.split(/\r?\n/)) {
+    const line = raw.replace(/\r$/, '');
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload.startsWith('{')) continue;
+    try {
+      const t = JSON.parse(payload)?.metadata?.usage?.tokens_consumed?.[0];
+      if (t) {
+        const i = pick(t.input_tokens), o = pick(t.output_tokens);
+        if (i != null || o != null) result = { inputTokens: i, outputTokens: o };
+      }
+    } catch { /* skip non-JSON / partial data lines */ }
+  }
+  return result;
+};
+
+/**
  * Queries SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY for the row matching
  * the given request ID and returns { credits, costUSD }.
  *
@@ -354,7 +384,10 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
     await langsmith.createRun({
       id: runId,
       name: 'snowflake-agent-proxy',
-      run_type: 'chain',
+      // 'llm' so LangSmith promotes outputs.usage_metadata into THIS run's own
+      // Tokens/Cost columns. A 'chain' run only sums tokens from child llm runs
+      // (there are none here), which is why the Tokens column read 0.
+      run_type: 'llm',
       project_name: LANGSMITH_PROJECT,
       // Surface the category as a run tag so it shows up — and is filterable/groupable —
       // in the LangSmith run list, not just buried in run metadata.
@@ -400,6 +433,27 @@ const finishLangSmithRun = async (runId, { output, error, status, latencyMs, str
 };
 
 /**
+ * Builds the usage_metadata object LangSmith reads (from run outputs) to populate
+ * the Tokens column (input/output/total_tokens, parsed from the SSE stream) and the
+ * Cost column (total_cost, from the Snowflake credit lookup). Returns undefined when
+ * there is nothing to report so we never write an empty object.
+ */
+const buildUsageMetadata = ({ inputTokens, outputTokens, costUSD } = {}) => {
+  const hasTokens = inputTokens != null || outputTokens != null;
+  const hasCost   = costUSD != null;
+  if (!hasTokens && !hasCost) return undefined;
+
+  const meta = {};
+  if (hasTokens) {
+    meta.input_tokens  = inputTokens  ?? 0;
+    meta.output_tokens = outputTokens ?? 0;
+    meta.total_tokens  = (inputTokens ?? 0) + (outputTokens ?? 0);
+  }
+  if (hasCost) meta.total_cost = costUSD;
+  return meta;
+};
+
+/**
  * Closes a LangSmith run for streaming responses, attaching Snowflake credit data.
  *
  * ACCOUNT_USAGE propagation lag means credits aren't immediately available.
@@ -412,13 +466,14 @@ const finishLangSmithRun = async (runId, { output, error, status, latencyMs, str
  * Polling schedule (seconds after stream end):
  *   10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300
  */
-const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize }) => {
+const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens }) => {
   if (!langsmith || !runId) return;
 
   // No request ID — nothing to look up, close immediately instead of spinning 300s
   if (!requestId) {
+    const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
     langsmith.updateRun(runId, {
-      outputs: { response: output },
+      outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
       end_time: streamEndTime,
       extra: { metadata: { status, latencyMs, streamed: true } },
     }).catch(err => console.warn('⚠️ LangSmith updateRun failed:', err.message));
@@ -437,8 +492,9 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
       const credits = await fetchCredits(requestId);
 
       if (credits) {
+        const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens, costUSD: credits.costUSD });
         await langsmith.updateRun(runId, {
-          outputs: { response: output },
+          outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime, // actual stream end, not now
           extra: {
             metadata: {
@@ -461,8 +517,9 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
       } else {
         // All 300s exhausted — close without credits rather than leave the run open
         console.warn(`⚠️ No credit data after +${elapsed}s, closing run without credits`);
+        const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
         await langsmith.updateRun(runId, {
-          outputs: { response: output },
+          outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime,
           extra: { metadata: { status, latencyMs, streamed: true, output_size_mb: expectedSize } },
         });
@@ -666,6 +723,12 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
         if (!runFinalized) {
           runFinalized = true;
           const expectedSize = (fullStreamText.length * 1e-6).toFixed(4);
+          const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
+          console.log(`🔢 Tokens — input: ${inputTokens ?? 'n/a'}, output: ${outputTokens ?? 'n/a'}`);
+          if (inputTokens == null && outputTokens == null) {
+            // No usage parsed — dump the tail of the stream so the token path can be confirmed
+            console.log('🔍 No tokens parsed; stream tail:', fullStreamText.slice(-800));
+          }
           closeRunWithCredits(langsmithRunId, {
             output: fullStreamText,
             status: statusCode,
@@ -673,6 +736,8 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
             streamEndTime: new Date().toISOString(),
             requestId: finalRequestId,
             expectedSize,
+            inputTokens,
+            outputTokens,
           });
         }
         res.end();
@@ -692,11 +757,14 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
             // Agent usually still completes server-side after a client abort and is billed —
             // pass the request ID through so LangSmith records credits rather than nothing.
             const finalRequestId = extractRequestIdFromSSE(fullStreamText) || snowflakeRequestId || null;
+            const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
             closeRunWithCredits(langsmithRunId, {
               output: fullStreamText, status: 499,
               latencyMs: Date.now() - startTime,
               streamEndTime: new Date().toISOString(),
               requestId: finalRequestId,
+              inputTokens,
+              outputTokens,
             });
           }
           return;
@@ -734,12 +802,15 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
         runFinalized = true;
         // Agent is billed even after client disconnect — capture request ID for LangSmith
         const finalRequestId = extractRequestIdFromSSE(fullStreamText) || snowflakeRequestId || null;
+        const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
         closeRunWithCredits(langsmithRunId, {
           output: fullStreamText,
           status: 499, // 499 = Client Closed Request (nginx convention)
           latencyMs: Date.now() - startTime,
           streamEndTime: new Date().toISOString(),
           requestId: finalRequestId,
+          inputTokens,
+          outputTokens,
         });
       });
 
