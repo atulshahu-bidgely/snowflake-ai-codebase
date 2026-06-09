@@ -25,10 +25,14 @@ export const UsagePopover: React.FC<UsagePopoverProps> = ({ usage, anchorEl, onC
   if (!usage) return null;
 
   const { creditsLeft, creditAllowance, resetInterval, costs } = usage;
-  const usedPct = creditAllowance > 0
-    ? Math.min(((creditAllowance - creditsLeft) / creditAllowance) * 100, 100)
+  // Bar reflects credits REMAINING as a share of the allowance (RESET_CREDITS),
+  // so it drains as credits are spent. Colors scale to that share rather than
+  // hardcoded counts, so they work for any allowance size.
+  const remainingPct = creditAllowance > 0
+    ? Math.min(Math.max((creditsLeft / creditAllowance) * 100, 0), 100)
     : 0;
-  const barColor = creditsLeft <= 10 ? '#ef4444' : creditsLeft <= 20 ? '#f59e0b' : '#94a3b8';
+  const barColor = remainingPct <= 10 ? '#ef4444' : remainingPct <= 25 ? '#f59e0b' : '#0c6ae9';
+  const fmt = (n: number) => n.toLocaleString('en-US');
 
   return (
     <Popover
@@ -70,7 +74,7 @@ export const UsagePopover: React.FC<UsagePopoverProps> = ({ usage, anchorEl, onC
             fontSize: 40, fontWeight: 800, lineHeight: 1, letterSpacing: '-0.04em',
             color: barColor, fontFamily: FONT, fontVariantNumeric: 'tabular-nums',
           }}>
-            {creditsLeft}
+            {fmt(creditsLeft)}
           </Typography>
           <Typography sx={{
             fontSize: 22, fontWeight: 400, lineHeight: 1, letterSpacing: '-0.02em',
@@ -82,14 +86,14 @@ export const UsagePopover: React.FC<UsagePopoverProps> = ({ usage, anchorEl, onC
             fontSize: 22, fontWeight: 500, lineHeight: 1, letterSpacing: '-0.02em',
             color: '#9ca3af', fontFamily: FONT, fontVariantNumeric: 'tabular-nums',
           }}>
-            {creditAllowance}
+            {fmt(creditAllowance)}
           </Typography>
         </Box>
 
         {/* Progress bar (proportion of allowance consumed) */}
         <Box sx={{ height: 6, borderRadius: 3, bgcolor: '#e8edf4', overflow: 'hidden', mb: 1 }}>
           <Box sx={{
-            height: '100%', width: `${usedPct}%`, borderRadius: 3,
+            height: '100%', width: `${remainingPct}%`, borderRadius: 3,
             bgcolor: barColor, transition: 'width 0.5s ease',
           }} />
         </Box>
@@ -97,7 +101,7 @@ export const UsagePopover: React.FC<UsagePopoverProps> = ({ usage, anchorEl, onC
         {/* Below bar row */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
           <Typography sx={{ fontSize: 12, color: '#9ca3af', fontFamily: FONT }}>
-            {creditsLeft > 0 ? `${pluralCredits(creditsLeft)} remaining` : 'No credits remaining'}
+            {creditsLeft > 0 ? `${fmt(creditsLeft)} ${creditsLeft === 1 ? 'credit' : 'credits'} remaining` : 'No credits remaining'}
           </Typography>
           <Typography sx={{ fontSize: 12, color: '#9ca3af', fontFamily: FONT }}>
             Resets every {resetInterval}

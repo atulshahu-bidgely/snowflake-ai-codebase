@@ -146,9 +146,10 @@ export const EnergyAssistantPopup: React.FC = () => {
   const [open, setOpen]                         = useState(false);
   const { usage, applyCreditsLeft } = useUsage();
   const [usageAnchorEl, setUsageAnchorEl] = useState<HTMLElement | null>(null);
-  const creditColor = usage
-    ? (usage.creditsLeft <= 10 ? '#ef4444' : usage.creditsLeft <= 20 ? '#f59e0b' : '#0c6ae9')
-    : '#0c6ae9';
+  const creditPct = usage && usage.creditAllowance > 0
+    ? (usage.creditsLeft / usage.creditAllowance) * 100
+    : 100;
+  const creditColor = creditPct <= 10 ? '#ef4444' : creditPct <= 25 ? '#f59e0b' : '#0c6ae9';
   const [showBeta, setShowBeta]                 = useState(() => localStorage.getItem('energy-analyzer-opened') !== 'true');
   const [inputText, setInputText]               = useState('');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
@@ -319,7 +320,7 @@ export const EnergyAssistantPopup: React.FC = () => {
               >
                 <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: creditColor }} />
                 <Typography sx={{ fontSize: 13, color: '#444', fontFamily: FONT, fontWeight: 600, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-                  {usage.creditsLeft}
+                  {usage.creditsLeft.toLocaleString('en-US')}
                 </Typography>
                 <Typography sx={{ fontSize: 13, color: '#888', fontFamily: FONT, fontWeight: 500, whiteSpace: 'nowrap' }}>
                   credits

@@ -16,9 +16,10 @@ export const ChatHeader: React.FC = () => {
   const { usage } = useUsage();
   const [usageAnchorEl, setUsageAnchorEl] = useState<HTMLElement | null>(null);
 
-  const creditColor = usage
-    ? (usage.creditsLeft <= 10 ? '#ef4444' : usage.creditsLeft <= 20 ? '#f59e0b' : '#0c6ae9')
-    : '#0c6ae9';
+  const creditPct = usage && usage.creditAllowance > 0
+    ? (usage.creditsLeft / usage.creditAllowance) * 100
+    : 100;
+  const creditColor = creditPct <= 10 ? '#ef4444' : creditPct <= 25 ? '#f59e0b' : '#0c6ae9';
 
   return (
     <Paper
@@ -156,7 +157,7 @@ export const ChatHeader: React.FC = () => {
                     fontFamily: HEADER_FONT,
                     fontVariantNumeric: 'tabular-nums',
                   }}>
-                    {usage.creditsLeft}
+                    {usage.creditsLeft.toLocaleString('en-US')}
                   </Typography>
                   <Typography sx={{ fontSize: 12, color: 'text.secondary', fontFamily: HEADER_FONT }}>
                     credits
