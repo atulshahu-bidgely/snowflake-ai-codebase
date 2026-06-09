@@ -53,10 +53,11 @@ validateEnvironment();
 
 // Assembled once from env vars so nothing sensitive is scattered across the codebase.
 const SNOWFLAKE_CONFIG = {
-  host:     process.env.SNOWFLAKE_HOST,      // e.g. abc123.snowflakecomputing.com
-  pat:      process.env.SNOWFLAKE_PAT,       // Personal Access Token (never sent to client)
-  database: process.env.SNOWFLAKE_DATABASE,
-  schema:   process.env.SNOWFLAKE_SCHEMA,
+  host:      process.env.SNOWFLAKE_HOST,      // e.g. abc123.snowflakecomputing.com
+  pat:       process.env.SNOWFLAKE_PAT,       // Personal Access Token (never sent to client)
+  database:  process.env.SNOWFLAKE_DATABASE,
+  schema:    process.env.SNOWFLAKE_SCHEMA,
+  agentName: (process.env.AGENT_NAME || '').split('.').pop() || null,
 };
 
 // LangSmith is optional — if no API key is set, all tracing calls are no-ops.
@@ -96,6 +97,7 @@ const corsOptions = {
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Accept'],
+  exposedHeaders: ['X-Credits-Left', 'X-Charged-Cost', 'X-Has-Enough-Credits'],
 };
 
 app.use(cors(corsOptions));
@@ -560,9 +562,80 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' });
 });
 
+// ============================================================================
+// GET /api/usage — credits remaining + per-question-type credit costs (from .env)
+// ----------------------------------------------------------------------------
+// The frontend UsagePopover reads this to display:
+//   • credits left for the current USER_ID (live value from user_tracker.csv)
+//   • the credit cost of each question type (LEFT_COST / MIDDLE_COST / RIGHT_COST)
+//   • the credit allowance the account resets to (RESET_CREDITS)
+// All numbers are sourced from the backend .env so the UI stays in sync with
+// the real deduction/reset logic.
+// ============================================================================
+app.get('/api/usage', (req, res) => {
+  const fs = require('fs');
+
+  const CREDIT_ALLOWANCE = Number(process.env.RESET_CREDITS || 100);
+  const RESET_INTERVAL   = (process.env.RESET_INTERVAL || 'day').toLowerCase();
+  const userId           = process.env.USER_ID || 'unknown_user';
+  const trackerPath      = path.resolve(__dirname, '../user_tracker.csv');
+
+  // Default to a full allowance if the user has no row yet (first request adds them).
+  let creditsLeft = CREDIT_ALLOWANCE;
+
+  try {
+    if (fs.existsSync(trackerPath)) {
+      const lines = fs.readFileSync(trackerPath, 'utf8').trim().split('\n').filter(Boolean);
+      const dataLines = lines.slice(1); // skip header
+      const row = dataLines.find(line => line.split(',')[0].trim() === userId);
+      if (row) {
+        const parsed = parseFloat(row.split(',')[1]);
+        if (!Number.isNaN(parsed)) creditsLeft = parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('\u26a0\ufe0f  /api/usage: could not read user_tracker.csv:', err.message);
+  }
+
+  const creditsUsed = Math.max(CREDIT_ALLOWANCE - creditsLeft, 0);
+
+  res.json({
+    userId,
+    creditsLeft,
+    creditsUsed,
+    creditAllowance: CREDIT_ALLOWANCE,
+    resetInterval: RESET_INTERVAL,
+    // Per-question-type credit costs, straight from .env
+    costs: {
+      dataQuery:     LEFT_COST,
+      trendAnalysis: MIDDLE_COST,
+      targeting:     RIGHT_COST,
+    },
+  });
+});
+
 // GET /api/agents — lists all Cortex Agents in the configured database/schema
 app.get('/api/agents', async (req, res) => {
   try {
+    // If AGENT_NAME is set in .env, only return that agent (describe it and wrap in array)
+    if (SNOWFLAKE_CONFIG.agentName) {
+      const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${SNOWFLAKE_CONFIG.agentName}`;
+      console.log(`📡 Fetching configured agent from .env: ${SNOWFLAKE_CONFIG.agentName}...`);
+      const response = await fetch(endpoint, { method: 'GET', headers: getSnowflakeAuthHeaders() });
+      if (!response.ok) {
+        let errorBody = null;
+        if (response.headers.get('content-type')?.includes('application/json')) {
+          errorBody = await response.json().catch(() => null);
+        }
+        const errorParts = buildSnowflakeErrorParts(response.status, response.statusText, errorBody);
+        console.error('❌ Snowflake API error:', response.status, errorParts.join('\n'));
+        return res.status(response.status).json({ errorParts });
+      }
+      const agentDetails = await response.json();
+      console.log(`✅ Fetched configured agent: ${SNOWFLAKE_CONFIG.agentName}`);
+      return res.json([agentDetails]);
+    }
+
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents`;
     console.log('📡 Fetching agents list from Snowflake...');
 
@@ -591,7 +664,7 @@ app.get('/api/agents', async (req, res) => {
 // GET /api/agents/:agentName — returns details for a single Cortex Agent
 app.get('/api/agents/:agentName', async (req, res) => {
   try {
-    const { agentName } = req.params;
+    const agentName = SNOWFLAKE_CONFIG.agentName || req.params.agentName;
     if (!validateAgentName(agentName)) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
     }
@@ -641,7 +714,7 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
   let langsmithRunId = null;
 
   try {
-    const { agentName } = req.params;
+    const agentName = SNOWFLAKE_CONFIG.agentName || req.params.agentName;
     const requestBody = req.body;
 
     if (!validateAgentName(agentName)) {
@@ -755,6 +828,16 @@ try {
  }
 } catch (csvErr) {
  console.warn('⚠️ Could not read/write user_tracker.csv:', csvErr.message);
+}
+
+// ── Signal updated credits to the client immediately (as soon as the request
+//    goes through the CSV check) — sent as response headers so the frontend can
+//    refresh the credits pill the moment the stream's headers arrive, without
+//    waiting for the full agent response.
+if (!res.headersSent) {
+ res.setHeader('X-Credits-Left', String(creditsLeft));
+ res.setHeader('X-Charged-Cost', String(chargedCost));
+ res.setHeader('X-Has-Enough-Credits', String(hasEnoughCredits));
 }
 
 if (!hasEnoughCredits) {

@@ -3,12 +3,23 @@
  * Displays the application header with logo, title, and theme toggle
  */
 
-import React from 'react';
-import { Box, Container, Paper, Typography, Link } from '@mui/material';
+import React, { useState } from 'react';
+import { Box, Container, Paper, Typography, Link, ButtonBase } from '@mui/material';
 import { HEADER_TEXT } from '../../constants/textConstants';
 import { ThemeToggle } from '../ThemeToggle';
+import { useUsage } from '../../hooks/useUsage';
+import { UsagePopover } from '../UsagePopover';
+
+const HEADER_FONT = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 
 export const ChatHeader: React.FC = () => {
+  const { usage } = useUsage();
+  const [usageAnchorEl, setUsageAnchorEl] = useState<HTMLElement | null>(null);
+
+  const creditColor = usage
+    ? (usage.creditsLeft <= 10 ? '#ef4444' : usage.creditsLeft <= 20 ? '#f59e0b' : '#0c6ae9')
+    : '#0c6ae9';
+
   return (
     <Paper
       elevation={0}
@@ -119,8 +130,47 @@ export const ChatHeader: React.FC = () => {
                 right: 16
               }
             }}>
+              {usage && (
+                <ButtonBase
+                  onClick={(e) => setUsageAnchorEl(e.currentTarget)}
+                  aria-label="View credits and credit costs"
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.75,
+                    px: 1.25,
+                    py: 0.5,
+                    borderRadius: '20px',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    bgcolor: 'background.paper',
+                    transition: 'border-color 0.15s, box-shadow 0.15s',
+                    '&:hover': { borderColor: creditColor, boxShadow: '0 1px 6px rgba(0,0,0,0.08)' },
+                  }}
+                >
+                  <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: creditColor }} />
+                  <Typography sx={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: 'text.primary',
+                    fontFamily: HEADER_FONT,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {usage.creditsLeft}
+                  </Typography>
+                  <Typography sx={{ fontSize: 12, color: 'text.secondary', fontFamily: HEADER_FONT }}>
+                    credits
+                  </Typography>
+                </ButtonBase>
+              )}
               <ThemeToggle />
             </Box>
+
+            <UsagePopover
+              usage={usage}
+              anchorEl={usageAnchorEl}
+              onClose={() => setUsageAnchorEl(null)}
+            />
           </Box>
         </Container>
       </Box>

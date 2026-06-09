@@ -9,7 +9,7 @@ import { config } from '../config/env';
 import { extractSqlQuery, extractVerificationInfo, hasUsableChartData } from '../utils/chatUtils';
 import { ERROR_TEXT, API_DEFAULTS, getApiStatusMessage } from '../constants/textConstants';
 const MAX_MESSAGES = 100;
-export const useChatMessages = (selectedAgent: string) => {
+export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsLeft: number) => void) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -88,6 +88,15 @@ export const useChatMessages = (selectedAgent: string) => {
         body: JSON.stringify(requestBody),
         signal: abortController.signal
       });
+
+      // Server sends the updated balance in a header right after the CSV check —
+      // update the credits display the instant the response headers arrive.
+      const creditsHeader = response.headers.get('x-credits-left');
+      if (creditsHeader !== null && onCreditsLeft) {
+        const n = Number(creditsHeader);
+        if (!Number.isNaN(n)) onCreditsLeft(n);
+      }
+
       if (!response.ok) {
         // Try to get JSON error message from backend
         let errorMessage = `${ERROR_TEXT.API_ERROR}: ${response.status} ${response.statusText}`;
@@ -385,7 +394,7 @@ export const useChatMessages = (selectedAgent: string) => {
       setIsLoading(false);
       abortControllerRef.current = null;
     }
-  }, [isLoading, selectedAgent]);
+  }, [isLoading, selectedAgent, onCreditsLeft]);
   const cancelRequest = useCallback(() => {
     if (abortControllerRef.current && isLoading) {
       abortControllerRef.current.abort();

@@ -26,6 +26,8 @@ import { useAgentConfig } from '../hooks/useAgentConfig';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useAccordionState } from '../hooks/useAccordionState';
 import { ChatMessage } from './chat/ChatMessage';
+import { useUsage } from '../hooks/useUsage';
+import { UsagePopover } from './UsagePopover';
 
 const FONT     = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 const GRADIENT = 'linear-gradient(135deg, #0f4184 0%, #1e62c1 28%, #94207b 55%, #e4194b 80%, #f1774a 100%)';
@@ -142,6 +144,11 @@ Include a chart or visualization only when concrete chart rows are available fro
 
 export const EnergyAssistantPopup: React.FC = () => {
   const [open, setOpen]                         = useState(false);
+  const { usage, applyCreditsLeft } = useUsage();
+  const [usageAnchorEl, setUsageAnchorEl] = useState<HTMLElement | null>(null);
+  const creditColor = usage
+    ? (usage.creditsLeft <= 10 ? '#ef4444' : usage.creditsLeft <= 20 ? '#f59e0b' : '#0c6ae9')
+    : '#0c6ae9';
   const [showBeta, setShowBeta]                 = useState(() => localStorage.getItem('energy-analyzer-opened') !== 'true');
   const [inputText, setInputText]               = useState('');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
@@ -163,7 +170,8 @@ export const EnergyAssistantPopup: React.FC = () => {
   }, [agentList, selectedAgent]);
 
   const { messages, isLoading, sendMessage, cancelRequest, clearMessages } =
-    useChatMessages(selectedAgent);
+    useChatMessages(selectedAgent, applyCreditsLeft);
+
 
   const thinkingAccordion    = useAccordionState();
   const chartsAccordion      = useAccordionState();
@@ -296,6 +304,28 @@ export const EnergyAssistantPopup: React.FC = () => {
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {usage && (
+              <Box
+                component="button"
+                onClick={(e) => setUsageAnchorEl(e.currentTarget)}
+                aria-label="View credits and credit costs"
+                sx={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  cursor: 'pointer', border: '1px solid #e8eaed', borderRadius: '7px',
+                  bgcolor: 'transparent', px: '10px', py: '5px',
+                  transition: 'all 0.15s',
+                  '&:hover': { bgcolor: '#f4f6f9', borderColor: '#d0d4db' },
+                }}
+              >
+                <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: creditColor }} />
+                <Typography sx={{ fontSize: 13, color: '#444', fontFamily: FONT, fontWeight: 600, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                  {usage.creditsLeft}
+                </Typography>
+                <Typography sx={{ fontSize: 13, color: '#888', fontFamily: FONT, fontWeight: 500, whiteSpace: 'nowrap' }}>
+                  credits
+                </Typography>
+              </Box>
+            )}
             <Box
               component="button"
               onClick={handleNewChat}
@@ -321,6 +351,13 @@ export const EnergyAssistantPopup: React.FC = () => {
             </IconButton>
           </Box>
         </Box>
+
+        {/* Credits / cost popover (anchored to the header credits pill) */}
+        <UsagePopover
+          usage={usage}
+          anchorEl={usageAnchorEl}
+          onClose={() => setUsageAnchorEl(null)}
+        />
 
         {/* ── Body ──────────────────────────────────────────── */}
         <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
