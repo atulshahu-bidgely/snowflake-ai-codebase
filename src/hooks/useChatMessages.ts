@@ -89,12 +89,15 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
         signal: abortController.signal
       });
 
-      // Server sends the updated balance in a header right after the CSV check —
-      // update the credits display the instant the response headers arrive.
-      const creditsHeader = response.headers.get('x-credits-left');
-      if (creditsHeader !== null && onCreditsLeft) {
-        const n = Number(creditsHeader);
-        if (!Number.isNaN(n)) onCreditsLeft(n);
+      // Only update the credits display when the request actually went through.
+      // A rejected request (e.g. 402 insufficient credits) deducts nothing on the
+      // backend, so the pill must stay unchanged.
+      if (response.ok) {
+        const creditsHeader = response.headers.get('x-credits-left');
+        if (creditsHeader !== null && onCreditsLeft) {
+          const n = Number(creditsHeader);
+          if (!Number.isNaN(n)) onCreditsLeft(n);
+        }
       }
 
       if (!response.ok) {
