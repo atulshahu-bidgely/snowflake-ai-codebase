@@ -82,9 +82,13 @@ const corsOptions = {
     if (!origin) return callback(null, true); // mobile apps, Postman, curl, etc.
     if (process.env.NODE_ENV === 'development') return callback(null, true);
 
+    const defaultOrigins = [
+      'https://bidgely-energy-assistant.up.railway.app',
+      'https://bidgely-energy-analyzer.up.railway.app',
+    ];
     const allowedOrigins = process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-      : [];
+      : defaultOrigins;
 
     if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
       callback(null, true);
