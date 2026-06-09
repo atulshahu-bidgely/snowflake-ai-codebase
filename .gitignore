@@ -76,3 +76,7 @@ Thumbs.db
 # package-lock.json should be committed for reproducible builds
 .DS_Store
 spcs/spec.yaml
+evaluator_setup/dataset_handler.py
+evaluator_setup/dataset_updater.py
+evaluator_setup/Golden_questions.csv
+evaluator_setup/test.py
