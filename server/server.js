@@ -594,7 +594,7 @@ app.get('/api/usage', (req, res) => {
       }
     }
   } catch (err) {
-    console.warn('\u26a0\ufe0f  /api/usage: could not read user_tracker.csv:', err.message);
+    console.warn('⚠️  /api/usage: could not read user_tracker.csv:', err.message);
   }
 
   const creditsUsed = Math.max(CREDIT_ALLOWANCE - creditsLeft, 0);
@@ -612,6 +612,29 @@ app.get('/api/usage', (req, res) => {
       targeting:     RIGHT_COST,
     },
   });
+});
+
+// POST /api/feedback — submit like/dislike to LangSmith
+app.post('/api/feedback', async (req, res) => {
+  const { runId, score } = req.body;
+  if (!runId || score === undefined) {
+    return res.status(400).json({ error: 'runId and score are required' });
+  }
+  if (!langsmith) {
+    return res.status(503).json({ error: 'LangSmith is not configured on this server' });
+  }
+  try {
+    const value = score === 1 ? 'verified' : 'wrong';
+    await langsmith.createFeedback(runId, 'user_feedback', {
+      score,        // 1 = like (verified), 0 = dislike (wrong)
+      value,
+    });
+    console.log(`👍 Feedback submitted for run ${runId}: ${value}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error submitting feedback:', error.message);
+    res.status(500).json({ error: sanitizeError(error) });
+  }
 });
 
 // GET /api/agents — lists all Cortex Agents in the configured database/schema
@@ -975,6 +998,12 @@ if (!hasEnoughCredits) {
             creditsLeft,
           });
         }
+
+        // Send the LangSmith run ID to the frontend so it can submit like/dislike feedback
+        if (langsmithRunId && !res.writableEnded) {
+          writeSseEvent(res, 'response.run_id', { run_id: langsmithRunId });
+        }
+
         res.end();
       });
 
