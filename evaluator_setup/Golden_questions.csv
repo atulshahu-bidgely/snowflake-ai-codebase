@@ -1,3 +1,0 @@
-input,category,min,max,directory,instructions,response
-"How has the monthly residential electricity consumption trend changed over the last 12 months in the Sunset 115 kV substation?","Analyse Trends","None","None","PROD_DB.DEMO.AWB_DEMO_MONTHLY_SUMMARY","Answer should show the month-wise trend of total residential AMI electricity consumption for customers filtered by substationId matching Sunset 115 kV over the last 12 months along with an attempt to make a csv or chart or table any of the 3 work","None"
-"How many Ev users do we have","Get Data","1000","1500","PROD_DB.DEMO.AWB_DEMO_MONTHLY_SUMMARY","None","None"
