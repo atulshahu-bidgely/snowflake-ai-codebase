@@ -323,6 +323,11 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
                     console.warn('Failed to process annotation:', annotationError);
                   }
                 }
+              } else if (currentEvent === 'response.run_id' && data.run_id) {
+                const rid = data.run_id;
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId ? { ...msg, runId: rid } : msg
+                ));
               } else if (currentEvent === 'response.error') {
                 streamErrorMessage = data.message || ERROR_TEXT.UNKNOWN_ERROR;
               }
@@ -413,11 +418,24 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
     setIsLoading(false);
     abortControllerRef.current = null;
   }, [isLoading]);
+  const submitFeedback = useCallback(async (runId: string, score: number) => {
+    try {
+      await fetch(`${config.backendUrl}/api/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId, score }),
+      });
+    } catch (e) {
+      console.warn('Feedback submission failed:', e);
+    }
+  }, []);
+
   return {
     messages,
     isLoading,
     sendMessage,
     cancelRequest,
-    clearMessages
+    clearMessages,
+    submitFeedback,
   };
 };

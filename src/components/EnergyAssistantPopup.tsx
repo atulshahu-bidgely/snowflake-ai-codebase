@@ -170,7 +170,7 @@ export const EnergyAssistantPopup: React.FC = () => {
     if (agentList.length > 0 && !selectedAgent) setSelectedAgent(agentList[0].id);
   }, [agentList, selectedAgent]);
 
-  const { messages, isLoading, sendMessage, cancelRequest, clearMessages } =
+  const { messages, isLoading, sendMessage, cancelRequest, clearMessages, submitFeedback } =
     useChatMessages(selectedAgent, applyCreditsLeft);
 
 
@@ -637,6 +637,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       onToggleCharts={chartsAccordion.toggle}
                       onToggleAnnotations={annotationsAccordion.toggle}
                       onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget, isAnalysis, categoryLabel)}
+                      onFeedback={submitFeedback}
                     />
                   ))}
                 </Stack>
