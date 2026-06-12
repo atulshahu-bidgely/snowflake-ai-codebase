@@ -53,6 +53,7 @@ export interface ChatMessage {
   toolsUsed?: string[];
   isTarget?: boolean;
   isAnalysis?: boolean;
+  runId?: string;  // LangSmith run ID for feedback
 }
 
 export interface AccordionState {

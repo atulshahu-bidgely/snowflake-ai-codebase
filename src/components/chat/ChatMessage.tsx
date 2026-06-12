@@ -12,6 +12,8 @@ import {
 import {
   ContentCopy as CopyIcon,
   Replay as ReplayIcon,
+  ThumbUpAlt as ThumbUpIcon,
+  ThumbDownAlt as ThumbDownIcon,
 } from '@mui/icons-material';
 import { ChatMessage as ChatMessageType } from '../../types/chat';
 import { ThinkingSteps } from './ThinkingSteps';
@@ -54,6 +56,7 @@ interface ChatMessageProps {
   onToggleCharts: (messageId: string) => void;
   onToggleAnnotations: (messageId: string) => void;
   onResendMessage?: (text: string) => void;
+  onFeedback?: (runId: string, score: number) => void;
 }
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
@@ -65,8 +68,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onToggleCharts,
   onToggleAnnotations,
   onResendMessage,
+  onFeedback,
 }) => {
   const [copySuccess, setCopySuccess] = useState(false);
+  const [feedback, setFeedback] = useState<'like' | 'dislike' | null>(null);
 
   const handleCopy = async () => {
     try {
@@ -80,6 +85,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
   const handleResend = () => {
     if (onResendMessage && message.text) onResendMessage(message.text);
+  };
+
+  const handleFeedback = (score: number) => {
+    const value = score === 1 ? 'like' : 'dislike';
+    if (feedback === value || !message.runId) return;
+    setFeedback(value as 'like' | 'dislike');
+    onFeedback?.(message.runId, score);
   };
 
   const isUser      = message.sender === 'user';
@@ -346,6 +358,38 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 <CopyIcon sx={{ fontSize: 15 }} />
               </IconButton>
             </Tooltip>
+            {message.runId && (
+              <>
+                <Tooltip title={feedback === 'like' ? 'Marked as helpful' : 'Helpful'} arrow>
+                  <IconButton
+                    onClick={() => handleFeedback(1)}
+                    size="small"
+                    sx={{
+                      p: '4px', borderRadius: '6px',
+                      color: feedback === 'like' ? '#16a34a' : TEXT2,
+                      '&:hover': { color: '#16a34a', bgcolor: '#F0FDF4' },
+                      transition: 'color 0.15s',
+                    }}
+                  >
+                    <ThumbUpIcon sx={{ fontSize: 15 }} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={feedback === 'dislike' ? 'Marked as unhelpful' : 'Not helpful'} arrow>
+                  <IconButton
+                    onClick={() => handleFeedback(0)}
+                    size="small"
+                    sx={{
+                      p: '4px', borderRadius: '6px',
+                      color: feedback === 'dislike' ? '#dc2626' : TEXT2,
+                      '&:hover': { color: '#dc2626', bgcolor: '#FEF2F2' },
+                      transition: 'color 0.15s',
+                    }}
+                  >
+                    <ThumbDownIcon sx={{ fontSize: 15 }} />
+                  </IconButton>
+                </Tooltip>
+              </>
+            )}
           </Stack>
         )}
       </Box>

@@ -9,7 +9,7 @@ import { config } from '../config/env';
 import { extractSqlQuery, extractVerificationInfo, hasUsableChartData } from '../utils/chatUtils';
 import { ERROR_TEXT, API_DEFAULTS, getApiStatusMessage } from '../constants/textConstants';
 const MAX_MESSAGES = 100;
-export const useChatMessages = (selectedAgent: string) => {
+export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsLeft: number) => void) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -88,6 +88,18 @@ export const useChatMessages = (selectedAgent: string) => {
         body: JSON.stringify(requestBody),
         signal: abortController.signal
       });
+
+      // Only update the credits display when the request actually went through.
+      // A rejected request (e.g. 402 insufficient credits) deducts nothing on the
+      // backend, so the pill must stay unchanged.
+      if (response.ok) {
+        const creditsHeader = response.headers.get('x-credits-left');
+        if (creditsHeader !== null && onCreditsLeft) {
+          const n = Number(creditsHeader);
+          if (!Number.isNaN(n)) onCreditsLeft(n);
+        }
+      }
+
       if (!response.ok) {
         // Try to get JSON error message from backend
         let errorMessage = `${ERROR_TEXT.API_ERROR}: ${response.status} ${response.statusText}`;
@@ -311,6 +323,11 @@ export const useChatMessages = (selectedAgent: string) => {
                     console.warn('Failed to process annotation:', annotationError);
                   }
                 }
+              } else if (currentEvent === 'response.run_id' && data.run_id) {
+                const rid = data.run_id;
+                setMessages(prev => prev.map(msg =>
+                  msg.id === assistantMessageId ? { ...msg, runId: rid } : msg
+                ));
               } else if (currentEvent === 'response.error') {
                 streamErrorMessage = data.message || ERROR_TEXT.UNKNOWN_ERROR;
               }
@@ -385,7 +402,7 @@ export const useChatMessages = (selectedAgent: string) => {
       setIsLoading(false);
       abortControllerRef.current = null;
     }
-  }, [isLoading, selectedAgent]);
+  }, [isLoading, selectedAgent, onCreditsLeft]);
   const cancelRequest = useCallback(() => {
     if (abortControllerRef.current && isLoading) {
       abortControllerRef.current.abort();
@@ -401,11 +418,24 @@ export const useChatMessages = (selectedAgent: string) => {
     setIsLoading(false);
     abortControllerRef.current = null;
   }, [isLoading]);
+  const submitFeedback = useCallback(async (runId: string, score: number) => {
+    try {
+      await fetch(`${config.backendUrl}/api/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId, score }),
+      });
+    } catch (e) {
+      console.warn('Feedback submission failed:', e);
+    }
+  }, []);
+
   return {
     messages,
     isLoading,
     sendMessage,
     cancelRequest,
-    clearMessages
+    clearMessages,
+    submitFeedback,
   };
 };

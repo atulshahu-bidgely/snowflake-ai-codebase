@@ -9,6 +9,9 @@ import {
   Divider,
   Fab,
   Zoom,
+  FormControl,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -26,11 +29,31 @@ import { useAgentConfig } from '../hooks/useAgentConfig';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useAccordionState } from '../hooks/useAccordionState';
 import { ChatMessage } from './chat/ChatMessage';
+import { useUsage } from '../hooks/useUsage';
+import { UsagePopover } from './UsagePopover';
 
 const FONT     = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 const GRADIENT = 'linear-gradient(135deg, #0f4184 0%, #1e62c1 28%, #94207b 55%, #e4194b 80%, #f1774a 100%)';
 const BLUE     = '#0c6ae9';
 const RED      = '#e4194b';
+
+/**
+ * Display-only label cleaner. Strips the words "energy" and "ami analyst" (case-insensitive,
+ * any separator) from an agent's display name and tidies leftover separators/whitespace.
+ * Computed at render time — the underlying agent id/config is never modified.
+ */
+const cleanAgentName = (name: string): string => {
+  const cleaned = (name || '')
+    .replace(/[_-]+/g, ' ')                          // agent names use underscores
+    .replace(/energy\s*ami\s*agent/gi, ' ')          // prune the ENERGY_AMI_AGENT prefix
+    .replace(/ami\s*(analyst|agent)/gi, ' ')          // any leftover "ami analyst"/"ami agent"
+    .replace(/energy/gi, ' ')
+    .replace(/&/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s\-–_|:,&]+|[\s\-–_|:,&]+$/g, '')
+    .trim();
+  return cleaned || name; // fall back to the original if stripping emptied it
+};
 
 const CATEGORIES = [
   {
@@ -142,6 +165,18 @@ Include a chart or visualization only when concrete chart rows are available fro
 
 export const EnergyAssistantPopup: React.FC = () => {
   const [open, setOpen]                         = useState(false);
+  const { usage, applyCreditsLeft } = useUsage();
+  const [usageAnchorEl, setUsageAnchorEl] = useState<HTMLElement | null>(null);
+  const creditPct = usage && usage.creditAllowance > 0
+    ? (usage.creditsLeft / usage.creditAllowance) * 100
+    : 100;
+  // Credit warning theming: red when < 20% remaining, yellow when < 50% remaining.
+  const lowCredits  = creditPct < 20;            // red
+  const midCredits  = creditPct < 50;            // yellow (>= 20% and < 50%)
+  const creditColor = lowCredits ? '#ef4444' : midCredits ? '#f59e0b' : '#0c6ae9';
+  const creditBg     = lowCredits ? 'rgba(239,68,68,0.08)'  : midCredits ? 'rgba(245,158,11,0.10)' : 'transparent';
+  const creditBgHover= lowCredits ? 'rgba(239,68,68,0.14)'  : midCredits ? 'rgba(245,158,11,0.16)' : '#f4f6f9';
+  const creditBorder = lowCredits ? 'rgba(239,68,68,0.45)'  : midCredits ? 'rgba(245,158,11,0.50)' : '#e8eaed';
   const [showBeta, setShowBeta]                 = useState(() => localStorage.getItem('energy-analyzer-opened') !== 'true');
   const [inputText, setInputText]               = useState('');
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
@@ -153,8 +188,11 @@ export const EnergyAssistantPopup: React.FC = () => {
   const agentList = useMemo(() => {
     if (!agentConfig) return [];
     return Object.entries(agentConfig.agents)
+      // Display only the agents whose name starts with "ENERGY" (id is unchanged).
+      .filter(([id]) => id.toUpperCase().startsWith('ENERGY'))
       .sort(([, a], [, b]) => a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase()))
-      .map(([id, cfg]) => ({ id, displayName: cfg.displayName }));
+      // displayName is cleaned for presentation only; `id` remains the real agent name.
+      .map(([id]) => ({ id, displayName: cleanAgentName(id) }));
   }, [agentConfig]);
 
   const [selectedAgent, setSelectedAgent] = useState<string>('');
@@ -162,8 +200,9 @@ export const EnergyAssistantPopup: React.FC = () => {
     if (agentList.length > 0 && !selectedAgent) setSelectedAgent(agentList[0].id);
   }, [agentList, selectedAgent]);
 
-  const { messages, isLoading, sendMessage, cancelRequest, clearMessages } =
-    useChatMessages(selectedAgent);
+  const { messages, isLoading, sendMessage, cancelRequest, clearMessages, submitFeedback } =
+    useChatMessages(selectedAgent, applyCreditsLeft);
+
 
   const thinkingAccordion    = useAccordionState();
   const chartsAccordion      = useAccordionState();
@@ -227,6 +266,18 @@ export const EnergyAssistantPopup: React.FC = () => {
     annotationsAccordion.reset();
     refreshAgents();
   }, [clearMessages, refreshAgents, thinkingAccordion, chartsAccordion, annotationsAccordion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Switch the active agent — resets the conversation so context doesn't bleed across agents.
+  const handleAgentChange = useCallback((agentId: string) => {
+    if (!agentId || agentId === selectedAgent) return;
+    setSelectedAgent(agentId);
+    clearMessages();
+    setInputText('');
+    setSelectedCategory(null);
+    thinkingAccordion.reset();
+    chartsAccordion.reset();
+    annotationsAccordion.reset();
+  }, [selectedAgent, clearMessages, thinkingAccordion, chartsAccordion, annotationsAccordion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
@@ -293,9 +344,57 @@ export const EnergyAssistantPopup: React.FC = () => {
                 </Typography>
               </Box>
             )}
+
+            {/* Agent switcher — pick any of the available Cortex agents */}
+            {agentList.length > 0 && (
+              <FormControl size="small" sx={{ ml: 0.75 }}>
+                <Select
+                  value={selectedAgent}
+                  onChange={(e) => handleAgentChange(e.target.value as string)}
+                  disabled={isLoading}
+                  aria-label="Select agent"
+                  sx={{
+                    fontFamily: FONT, fontSize: 13, fontWeight: 600, color: '#444',
+                    height: 30, borderRadius: '7px', bgcolor: 'transparent',
+                    '& .MuiSelect-select': { py: '5px', pl: '10px', pr: '30px !important' },
+                    '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e8eaed' },
+                    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#d0d4db' },
+                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: BLUE },
+                    '& .MuiSelect-icon': { color: '#888' },
+                  }}
+                  MenuProps={{ PaperProps: { sx: { mt: 0.5, maxHeight: 360, '& .MuiMenuItem-root': { fontFamily: FONT, fontSize: 13 } } } }}
+                >
+                  {agentList.map((a) => (
+                    <MenuItem key={a.id} value={a.id}>{a.displayName}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {usage && (
+              <Box
+                component="button"
+                onClick={(e) => setUsageAnchorEl(e.currentTarget)}
+                aria-label="View credits and credit costs"
+                sx={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  cursor: 'pointer', border: `1px solid ${creditBorder}`, borderRadius: '7px',
+                  bgcolor: creditBg, px: '10px', py: '5px',
+                  transition: 'all 0.15s',
+                  '&:hover': { bgcolor: creditBgHover, borderColor: creditBorder },
+                }}
+              >
+                <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: creditColor }} />
+                <Typography sx={{ fontSize: 13, color: creditColor, fontFamily: FONT, fontWeight: 700, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                  {usage.creditsLeft.toLocaleString('en-US')}
+                </Typography>
+                <Typography sx={{ fontSize: 13, color: (lowCredits || midCredits) ? creditColor : '#888', fontFamily: FONT, fontWeight: 500, whiteSpace: 'nowrap' }}>
+                  Credits left
+                </Typography>
+              </Box>
+            )}
             <Box
               component="button"
               onClick={handleNewChat}
@@ -321,6 +420,13 @@ export const EnergyAssistantPopup: React.FC = () => {
             </IconButton>
           </Box>
         </Box>
+
+        {/* Credits / cost popover (anchored to the header credits pill) */}
+        <UsagePopover
+          usage={usage}
+          anchorEl={usageAnchorEl}
+          onClose={() => setUsageAnchorEl(null)}
+        />
 
         {/* ── Body ──────────────────────────────────────────── */}
         <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
@@ -599,6 +705,7 @@ export const EnergyAssistantPopup: React.FC = () => {
                       onToggleCharts={chartsAccordion.toggle}
                       onToggleAnnotations={annotationsAccordion.toggle}
                       onResendMessage={(text) => sendMessage(buildPrompt(text, isAnalysis, isTarget), text, isTarget, isAnalysis, categoryLabel)}
+                      onFeedback={submitFeedback}
                     />
                   ))}
                 </Stack>
