@@ -18,7 +18,7 @@
  * - Credits and USD cost are attached to the LangSmith run once found.
  * - LangSmith latency reflects only the actual agent response time (not the polling wait).
  */
-
+const refusal_key="hdhkashqhdkjasdhaskhddkjas";
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -195,6 +195,38 @@ const validateAgentName = (agentName) => {
  */
 const isEnergyAgent = (name) =>
   typeof name === 'string' && name.toLowerCase().startsWith('energy');
+
+/**
+ * Adds `amount` credits back to a user's row in user_tracker.csv. Used to refund the
+ * difference when the refusal sentinel was stripped from the response. Returns the new
+ * balance, or null on failure.
+ */
+const refundCredits = (userId, amount) => {
+  if (!(amount > 0)) return null;
+  try {
+    const fs = require('fs');
+    const TRACKER = path.resolve(__dirname, '../user_tracker.csv');
+    if (!fs.existsSync(TRACKER)) return null;
+    const lines = fs.readFileSync(TRACKER, 'utf8').trim().split('\n').filter(Boolean);
+    const header = lines[0];
+    const rows = lines.slice(1);
+    let newBal = null;
+    for (let i = 0; i < rows.length; i++) {
+      const [id, c] = rows[i].split(',');
+      if (id.trim() === userId) {
+        newBal = (parseFloat(c) || 0) + amount;
+        rows[i] = `${userId},${newBal}`;
+        break;
+      }
+    }
+    if (newBal == null) return null;
+    fs.writeFileSync(TRACKER, [header, ...rows].join('\n') + '\n', 'utf8');
+    return newBal;
+  } catch (e) {
+    console.warn('\u26a0\ufe0f  refundCredits failed:', e.message);
+    return null;
+  }
+};
 
 /** UUID v4 generator — used for LangSmith run IDs so we control the ID before creation. */
 const uuidv4 = () =>
@@ -1015,6 +1047,52 @@ if (!hasEnoughCredits) {
 
       const decoder = new TextDecoder();
       let fullStreamText = '';
+      let sseBuf = '';             // buffers incomplete SSE events across chunks
+      let textCarry = '';          // partial-sentinel holdback at the assembled-TEXT level
+      let refusalDetected = false; // set when the sentinel appears in the answer text
+
+      // The sentinel is split across response.text.delta events, so it is only contiguous once
+      // the delta texts are concatenated. Strip it in the TEXT domain, holding back just a
+      // trailing partial-prefix so a sentinel spanning deltas is still caught.
+      const stripSentinelText = (incoming) => {
+        textCarry += incoming;
+        if (textCarry.includes(refusal_key)) {
+          refusalDetected = true;
+          textCarry = textCarry.split(refusal_key).join('');
+        }
+        let hold = 0;
+        const maxK = Math.min(textCarry.length, refusal_key.length - 1);
+        for (let k = maxK; k > 0; k--) {
+          if (textCarry.slice(textCarry.length - k) === refusal_key.slice(0, k)) { hold = k; break; }
+        }
+        const outText = hold > 0 ? textCarry.slice(0, textCarry.length - hold) : textCarry;
+        textCarry = hold > 0 ? textCarry.slice(textCarry.length - hold) : '';
+        return outText;
+      };
+
+      // Rewrites one SSE event: cleans the sentinel out of response.text.delta payloads,
+      // passes everything else through untouched.
+      const transformSseEvent = (rawEvent) => {
+        const lines = rawEvent.split(/\r?\n/);
+        let evt = null, dataIdx = -1, dataStr = null;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith('event:')) evt = lines[i].slice(6).trim();
+          else if (lines[i].startsWith('data:')) { dataIdx = i; dataStr = lines[i].slice(5).trim(); }
+        }
+        if (evt === 'response.text.delta' && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            if (typeof obj.text === 'string') {
+              obj.text = stripSentinelText(obj.text);
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+        return rawEvent;
+      };
+
+      const EVENT_SEP = /\r?\n\r?\n/;
 
       // Guards against finalizing the LangSmith run twice — both the upstream 'end'
       // and client 'close' handlers can fire; without this flag they'd each start
@@ -1025,9 +1103,20 @@ if (!hasEnoughCredits) {
       let clientAborted = false;
 
       upstreamResponse.on('data', chunk => {
-        fullStreamText += decoder.decode(chunk, { stream: true });
+        const text = decoder.decode(chunk, { stream: true });
+        fullStreamText += text;        // full raw text — used for token / request-id parsing
         if (res.writableEnded) return; // client may have cancelled
-        if (!res.write(chunk)) {
+
+        // Forward complete SSE events, stripping the sentinel from text deltas as we go.
+        sseBuf += text;
+        let outBuf = '';
+        let match;
+        while ((match = EVENT_SEP.exec(sseBuf)) !== null) {
+          const rawEvent = sseBuf.slice(0, match.index);
+          sseBuf = sseBuf.slice(match.index + match[0].length);
+          outBuf += transformSseEvent(rawEvent) + match[0];
+        }
+        if (outBuf && !res.write(Buffer.from(outBuf, 'utf8'))) {
           upstreamResponse.pause();
           res.once('drain', () => upstreamResponse.resume());
         }
@@ -1050,6 +1139,29 @@ if (!hasEnoughCredits) {
             // No usage parsed — dump the tail of the stream so the token path can be confirmed
             console.log('🔍 No tokens parsed; stream tail:', fullStreamText.slice(-800));
           }
+          // Flush the last buffered SSE event (response.completed often has no trailing blank
+          // line), then any held-back real text (sentinel already removed) as a final delta.
+          if (!res.writableEnded) {
+            if (sseBuf) { res.write(Buffer.from(transformSseEvent(sseBuf), 'utf8')); sseBuf = ''; }
+            const leftover = textCarry.split(refusal_key).join('');
+            textCarry = '';
+            if (leftover) writeSseEvent(res, 'response.text.delta', { text: leftover });
+          }
+
+          // If the sentinel was stripped, the agent refused — refund so the net charge is 1.
+          const refused = refusalDetected;
+          let finalCreditsLeft = creditsLeft;
+          if (hasEnoughCredits && chargedCost > 1 && refused) {
+            const refund = chargedCost - 1; // category cost consumed, minus 1
+            const endUserId = process.env.USER_ID || 'unknown_user';
+            const newBal = refundCredits(endUserId, refund);
+            if (newBal != null) {
+              finalCreditsLeft = newBal;
+              console.log(`\u21a9\ufe0f  Refusal sentinel stripped \u2014 refunded ${refund}, net charge 1, credits left: ${newBal}`);
+              if (!res.writableEnded) writeSseEvent(res, 'response.credits_adjusted', { creditsLeft: newBal });
+            }
+          }
+
           closeRunWithCredits(langsmithRunId, {
             output: fullStreamText,
             status: statusCode,
@@ -1059,7 +1171,7 @@ if (!hasEnoughCredits) {
             expectedSize,
             inputTokens,
             outputTokens,
-            creditsLeft,
+            creditsLeft: finalCreditsLeft,
           });
         }
 
