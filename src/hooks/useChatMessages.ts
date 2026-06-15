@@ -323,6 +323,8 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
                     console.warn('Failed to process annotation:', annotationError);
                   }
                 }
+              } else if (currentEvent === 'response.credits_adjusted' && typeof data.creditsLeft === 'number') {
+                if (onCreditsLeft) onCreditsLeft(data.creditsLeft);
               } else if (currentEvent === 'response.run_id' && data.run_id) {
                 const rid = data.run_id;
                 setMessages(prev => prev.map(msg =>

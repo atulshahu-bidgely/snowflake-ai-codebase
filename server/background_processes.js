@@ -11,7 +11,7 @@
  *
  * Config (env vars):
  *   RESET_INTERVAL   — minute | hour | day | week | month  (default: day)
- *   RESET_CREDITS    — credits to assign on reset           (default: 100)
+ *   RESET_CREDITS    — credits to assign on reset        
  */
 
 const fs   = require('fs');
@@ -20,7 +20,17 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const USER_TRACKER_PATH = path.resolve(__dirname, '../user_tracker.csv');
 const STATE_PATH        = path.resolve(__dirname, '../credit_reset_state.json');
-const RESET_CREDITS     = Number(process.env.RESET_CREDITS  || 100);
+function resolveResetCredits() {
+  var raw = process.env.RESET_CREDITS;
+  var cleaned = String(raw == null ? '' : raw).replace(/[,_\s]/g, '');
+  var n = Number(cleaned);
+  if (raw == null || String(raw).trim() === '' || !isFinite(n) || n < 0) {
+    console.error('RESET_CREDITS is missing or invalid (got: ' + JSON.stringify(raw) + '). Set a valid non-negative number in .env, e.g. RESET_CREDITS=1000.');
+    process.exit(1);
+  }
+  return n;
+}
+const RESET_CREDITS = resolveResetCredits();
 const RESET_INTERVAL    = (process.env.RESET_INTERVAL || 'day').toLowerCase();
 
 if (!['minute', 'hour', 'day', 'week', 'month'].includes(RESET_INTERVAL)) {
