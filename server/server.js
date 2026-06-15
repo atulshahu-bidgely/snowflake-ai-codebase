@@ -31,6 +31,29 @@ const LEFT_COST = Number(process.env.LEFT_COST || 1);
 const MIDDLE_COST = Number(process.env.MIDDLE_COST || 10);
 const RIGHT_COST = Number(process.env.RIGHT_COST || 20);
 
+// ── computer_sleep_connection_break key ledger ─────────────────────────────────────────────────────
+// Tracks computer_sleep_connection_break keys that have already been charged, so a query that is
+// auto-resumed by the client (e.g. after the computer slept mid-stream) and
+// arrives again with the SAME key is NOT billed a second time. In-memory with
+// a TTL — covers the resume window without growing unbounded.
+const CHARGED_KEYS = new Map();
+const CHARGED_KEY_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const getPriorCharge = (key) => {
+  const entry = CHARGED_KEYS.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CHARGED_KEY_TTL_MS) { CHARGED_KEYS.delete(key); return null; }
+  return entry;
+};
+const rememberCharge = (key, creditsLeft) => {
+  CHARGED_KEYS.set(key, { creditsLeft, ts: Date.now() });
+  if (CHARGED_KEYS.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of CHARGED_KEYS) {
+      if (now - v.ts > CHARGED_KEY_TTL_MS) CHARGED_KEYS.delete(k);
+    }
+  }
+};
+
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
 const PORT = process.env.PORT || process.env.SERVER_PORT || CONFIG.DEFAULT_PORT;
@@ -96,7 +119,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Accept', 'X-Computer-Sleep-Connection-Break-Key'],
   exposedHeaders: ['X-Credits-Left', 'X-Charged-Cost', 'X-Has-Enough-Credits'],
 };
 
@@ -774,7 +797,17 @@ let creditsLeft = 0;
 let chargedCost = 0;
 let hasEnoughCredits = true;
 
-try {
+// If this exact query was already charged (a client auto-resume after a
+// dropped connection sends the same X-Computer-Sleep-Connection-Break-Key), skip the deduction.
+const computerSleepConnectionBreakKey = req.headers['x-computer-sleep-connection-break-key'] || null;
+const priorCharge = computerSleepConnectionBreakKey ? getPriorCharge(computerSleepConnectionBreakKey) : null;
+
+if (priorCharge) {
+ chargedCost = 0;
+ creditsLeft = priorCharge.creditsLeft;
+ hasEnoughCredits = true;
+ console.log(`♻️  Resume after computer sleep / connection break (key ${computerSleepConnectionBreakKey}) — no credits charged. Credits left: ${creditsLeft}`);
+} else try {
  const fs = require('fs');
  const csvRaw = fs.existsSync(USER_TRACKER_PATH)
  ? fs.readFileSync(USER_TRACKER_PATH, 'utf8')
@@ -851,6 +884,11 @@ try {
  }
 } catch (csvErr) {
  console.warn('⚠️ Could not read/write user_tracker.csv:', csvErr.message);
+}
+
+// Record this charge so a later auto-resume with the same key is free.
+if (computerSleepConnectionBreakKey && hasEnoughCredits && !priorCharge) {
+ rememberCharge(computerSleepConnectionBreakKey, creditsLeft);
 }
 
 // ── Signal updated credits to the client immediately (as soon as the request
