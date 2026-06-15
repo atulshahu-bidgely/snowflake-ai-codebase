@@ -18,7 +18,7 @@
  * - Credits and USD cost are attached to the LangSmith run once found.
  * - LangSmith latency reflects only the actual agent response time (not the polling wait).
  */
-
+const refusal_key="hdhkashqhdkjasdhaskhddkjas";
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -30,6 +30,20 @@ const { HTTP_STATUS, ERROR_MESSAGES, CONFIG } = require('./constants');
 const LEFT_COST = Number(process.env.LEFT_COST || 1);
 const MIDDLE_COST = Number(process.env.MIDDLE_COST || 10);
 const RIGHT_COST = Number(process.env.RIGHT_COST || 20);
+// Credits an account resets/starts with. Single source of truth for the allowance shown in the UI.
+// NO fallback: if RESET_CREDITS is missing or invalid we crash on startup so the problem is obvious.
+function resolveResetCredits() {
+  var raw = process.env.RESET_CREDITS;
+  var cleaned = String(raw == null ? '' : raw).replace(/[,_\s]/g, '');
+  var n = Number(cleaned);
+  if (raw == null || String(raw).trim() === '' || !isFinite(n) || n < 0) {
+    console.error('RESET_CREDITS is missing or invalid (got: ' + JSON.stringify(raw) + '). Set a valid non-negative number in .env, e.g. RESET_CREDITS=1000.');
+    process.exit(1);
+  }
+  return n;
+}
+const RESET_CREDITS = resolveResetCredits();
+console.log('Credit allowance (RESET_CREDITS): ' + RESET_CREDITS);
 
 // ── computer_sleep_connection_break key ledger ─────────────────────────────────────────────────────
 // Tracks computer_sleep_connection_break keys that have already been charged, so a query that is
@@ -76,12 +90,34 @@ validateEnvironment();
 
 // Assembled once from env vars so nothing sensitive is scattered across the codebase.
 const SNOWFLAKE_CONFIG = {
-  host:      process.env.SNOWFLAKE_HOST,      // e.g. abc123.snowflakecomputing.com
-  pat:       process.env.SNOWFLAKE_PAT,       // Personal Access Token (never sent to client)
-  database:  process.env.SNOWFLAKE_DATABASE,
-  schema:    process.env.SNOWFLAKE_SCHEMA,
-  agentName: (process.env.AGENT_NAME || '').split('.').pop() || null,
+  host:     process.env.SNOWFLAKE_HOST,      // e.g. abc123.snowflakecomputing.com
+  pat:      process.env.SNOWFLAKE_PAT,       // Personal Access Token (never sent to client)
+  database: process.env.SNOWFLAKE_DATABASE,
+  schema:   process.env.SNOWFLAKE_SCHEMA,
 };
+
+// ── Agent catalog ─────────────────────────────────────────────────────────────
+// Optional: set AGENTS env var as "Label|db.schema.agent_name,..." to restrict
+// to a specific subset. When AGENTS is unset, all agents in the schema are listed
+// dynamically from Snowflake and any of them can be messaged.
+const parseAgentCatalog = () => {
+  if (!process.env.AGENTS) return []; // empty = fetch all from Snowflake dynamically
+  return process.env.AGENTS.split(',')
+    .map((entry) => {
+      const [label, fullName] = entry.split('|').map(s => (s || '').trim());
+      if (!label || !fullName) return null;
+      const shortName = fullName.split('.').pop().toLowerCase();
+      return { id: shortName, label, fullName, shortName };
+    })
+    .filter(Boolean);
+};
+
+const AGENTS_CATALOG = parseAgentCatalog();
+// Set for O(1) allowlist checks — compare lowercase so URL params are case-insensitive
+const CATALOG_SHORT_NAMES = new Set(AGENTS_CATALOG.map(a => a.shortName));
+
+const catalogSummary = AGENTS_CATALOG.map(a => a.label + ' (' + a.shortName + ')').join(', ') || '(empty)';
+console.log('🗂️  Agent catalog: ' + catalogSummary);
 
 // LangSmith is optional — if no API key is set, all tracing calls are no-ops.
 const LANGSMITH_ENABLED = Boolean(process.env.LANGSMITH_API_KEY);
@@ -172,6 +208,47 @@ const sanitizeError = (error) => {
 const validateAgentName = (agentName) => {
   if (!agentName || typeof agentName !== 'string') return false;
   return /^[a-zA-Z0-9_\-.]+$/.test(agentName) && agentName.length <= CONFIG.MAX_AGENT_NAME_LENGTH;
+};
+
+/**
+ * Hard gate: only agents whose name starts with "ENERGY" may be listed, described, or
+ * messaged. This is enforced server-side (not just hidden in the UI) so non-energy agents
+ * — e.g. PROGRAM_MANAGER — cannot be reached by hand-crafting a request or inspecting element.
+ * Matches the frontend display rule exactly.
+ */
+const isEnergyAgent = (name) =>
+  typeof name === 'string' && name.toLowerCase().startsWith('energy');
+
+/**
+ * Adds `amount` credits back to a user's row in user_tracker.csv. Used to refund the
+ * difference when the refusal sentinel was stripped from the response. Returns the new
+ * balance, or null on failure.
+ */
+const refundCredits = (userId, amount) => {
+  if (!(amount > 0)) return null;
+  try {
+    const fs = require('fs');
+    const TRACKER = path.resolve(__dirname, '../user_tracker.csv');
+    if (!fs.existsSync(TRACKER)) return null;
+    const lines = fs.readFileSync(TRACKER, 'utf8').trim().split('\n').filter(Boolean);
+    const header = lines[0];
+    const rows = lines.slice(1);
+    let newBal = null;
+    for (let i = 0; i < rows.length; i++) {
+      const [id, c] = rows[i].split(',');
+      if (id.trim() === userId) {
+        newBal = (parseFloat(c) || 0) + amount;
+        rows[i] = `${userId},${newBal}`;
+        break;
+      }
+    }
+    if (newBal == null) return null;
+    fs.writeFileSync(TRACKER, [header, ...rows].join('\n') + '\n', 'utf8');
+    return newBal;
+  } catch (e) {
+    console.warn('\u26a0\ufe0f  refundCredits failed:', e.message);
+    return null;
+  }
 };
 
 /** UUID v4 generator — used for LangSmith run IDs so we control the ID before creation. */
@@ -417,9 +494,13 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
       // (there are none here), which is why the Tokens column read 0.
       run_type: 'llm',
       project_name: LANGSMITH_PROJECT,
-      // Surface the category as a run tag so it shows up — and is filterable/groupable —
-      // in the LangSmith run list, not just buried in run metadata.
-      tags: category ? [`category:${category}`, `User ID = ${USER}`] : [`User ID = ${USER}`],
+      // Surface the category AND the agent as run tags so they show up — and are
+      // filterable/groupable — in the LangSmith run list, not just buried in metadata.
+      tags: [
+        ...(category ? [`category:${category}`] : []),
+        `Agent = ${agentName}`,
+        `User ID = ${USER}`,
+      ],
         inputs: {
           agentName,
           messages: requestBody.messages || [],
@@ -432,6 +513,7 @@ const createLangSmithRun = async ({ req, agentName, requestBody }) => {
           userAgent: req.get('user-agent') || '',
           streamed:  Boolean(requestBody.stream),
           category,
+          agent: agentName,
         },
       },
     });
@@ -598,7 +680,7 @@ app.get('/health', (req, res) => {
 app.get('/api/usage', (req, res) => {
   const fs = require('fs');
 
-  const CREDIT_ALLOWANCE = Number(process.env.RESET_CREDITS || 100);
+  const CREDIT_ALLOWANCE = RESET_CREDITS;
   const RESET_INTERVAL   = (process.env.RESET_INTERVAL || 'day').toLowerCase();
   const userId           = process.env.USER_ID || 'unknown_user';
   const trackerPath      = path.resolve(__dirname, '../user_tracker.csv');
@@ -660,33 +742,26 @@ app.post('/api/feedback', async (req, res) => {
   }
 });
 
-// GET /api/agents — lists all Cortex Agents in the configured database/schema
+// GET /api/agents — returns agent catalog (or lists all from Snowflake if no catalog configured)
 app.get('/api/agents', async (req, res) => {
   try {
-    // If AGENT_NAME is set in .env, only return that agent (describe it and wrap in array)
-    if (SNOWFLAKE_CONFIG.agentName) {
-      const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${SNOWFLAKE_CONFIG.agentName}`;
-      console.log(`📡 Fetching configured agent from .env: ${SNOWFLAKE_CONFIG.agentName}...`);
-      const response = await fetch(endpoint, { method: 'GET', headers: getSnowflakeAuthHeaders() });
-      if (!response.ok) {
-        let errorBody = null;
-        if (response.headers.get('content-type')?.includes('application/json')) {
-          errorBody = await response.json().catch(() => null);
-        }
-        const errorParts = buildSnowflakeErrorParts(response.status, response.statusText, errorBody);
-        console.error('❌ Snowflake API error:', response.status, errorParts.join('\n'));
-        return res.status(response.status).json({ errorParts });
-      }
-      const agentDetails = await response.json();
-      console.log(`✅ Fetched configured agent: ${SNOWFLAKE_CONFIG.agentName}`);
-      return res.json([agentDetails]);
+    // Catalog configured — return synthetic list so the frontend can populate the dropdown
+    // without a Snowflake round-trip. The frontend will call GET /api/agents/:name for details.
+    if (AGENTS_CATALOG.length > 0) {
+      const list = AGENTS_CATALOG.map(a => ({
+        name: a.shortName,
+        database_name: SNOWFLAKE_CONFIG.database,
+        schema_name:   SNOWFLAKE_CONFIG.schema,
+        label:         a.label,        // extra field used by the frontend picker
+      }));
+      console.log(`✅ Returning ${list.length} agents from catalog`);
+      return res.json(list);
     }
 
+    // No catalog — fall back to listing everything in the schema from Snowflake
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents`;
-    console.log('📡 Fetching agents list from Snowflake...');
-
+    console.log('📡 Fetching agents list from Snowflake (no catalog configured)...');
     const response = await fetch(endpoint, { method: 'GET', headers: getSnowflakeAuthHeaders() });
-
     if (!response.ok) {
       let errorBody = null;
       if (response.headers.get('content-type')?.includes('application/json')) {
@@ -696,7 +771,6 @@ app.get('/api/agents', async (req, res) => {
       console.error('❌ Snowflake API error:', response.status, errorParts.join('\n'));
       return res.status(response.status).json({ errorParts });
     }
-
     const data = await response.json();
     console.log(`✅ Fetched ${Array.isArray(data) ? data.length : 'unknown'} agents`);
     res.json(data);
@@ -710,9 +784,13 @@ app.get('/api/agents', async (req, res) => {
 // GET /api/agents/:agentName — returns details for a single Cortex Agent
 app.get('/api/agents/:agentName', async (req, res) => {
   try {
-    const agentName = SNOWFLAKE_CONFIG.agentName || req.params.agentName;
+    const agentName = req.params.agentName; // case-sensitive; use as provided by the client
     if (!validateAgentName(agentName)) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+    }
+    if (!isEnergyAgent(agentName)) {
+      console.warn(`⛔ Rejected non-energy agent (describe): "${agentName}"`);
+      return res.status(HTTP_STATUS.FORBIDDEN).json({ error: `Agent "${agentName}" is not available.` });
     }
 
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}`;
@@ -760,11 +838,29 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
   let langsmithRunId = null;
 
   try {
-    const agentName = SNOWFLAKE_CONFIG.agentName || req.params.agentName;
+    // Use the agent name from the URL — never override from env (that's what broke switching).
+    // Snowflake agent names are CASE-SENSITIVE (e.g. ENERGY_AMI_AGENT_DEMO), so keep the
+    // original casing for the :run endpoint. Only lowercase a copy for the allowlist check.
+    const agentName = req.params.agentName;
+    const agentNameLower = agentName.toLowerCase();
     const requestBody = req.body;
 
     if (!validateAgentName(agentName)) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+    }
+
+    // Energy-only gate — only agents whose name starts with "ENERGY" may be messaged.
+    // Enforced here so no one can reach other agents (e.g. PROGRAM_MANAGER) by inspecting
+    // element or crafting a request directly.
+    if (!isEnergyAgent(agentName)) {
+      console.warn(`⛔ Rejected non-energy agent: "${agentName}"`);
+      return res.status(HTTP_STATUS.FORBIDDEN).json({ error: `Agent "${agentName}" is not available.` });
+    }
+
+    // Allowlist check — reject agents not in the catalog (prevents probing arbitrary agents)
+    if (AGENTS_CATALOG.length > 0 && !CATALOG_SHORT_NAMES.has(agentNameLower)) {
+      console.warn(`⛔ Rejected unlisted agent: "${agentName}"`);
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: `Agent "${agentName}" is not in the allowed catalog.` });
     }
     if (!requestBody.messages || !Array.isArray(requestBody.messages) || requestBody.messages.length === 0) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.MESSAGES_REQUIRED });
@@ -777,7 +873,7 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     // HERE THE CATEGORY IS RETRIEVED BUT THE REQUEST TO THE BOT ITSELF IS NOT SENT
     // ── User credit lookup ───────────────────────────────────────────────────
     // Reads user_tracker.csv (sibling of the server/ folder). If the user is
-    // not found they are added with 100 credits so future requests can deduct.
+    // not found they are added with RESET_CREDITS credits so future requests can deduct.
    const normalizeCategory = (value) => String(value || '').trim().toLowerCase();
 
 const getCategoryCost = (category) => {
@@ -855,7 +951,7 @@ if (priorCharge) {
  }
 
  if (!userFound) {
-  const startingCredits = 100;
+  const startingCredits = RESET_CREDITS;
 
   if (startingCredits < chargedCost) {
    hasEnoughCredits = false;
@@ -989,6 +1085,52 @@ if (!hasEnoughCredits) {
 
       const decoder = new TextDecoder();
       let fullStreamText = '';
+      let sseBuf = '';             // buffers incomplete SSE events across chunks
+      let textCarry = '';          // partial-sentinel holdback at the assembled-TEXT level
+      let refusalDetected = false; // set when the sentinel appears in the answer text
+
+      // The sentinel is split across response.text.delta events, so it is only contiguous once
+      // the delta texts are concatenated. Strip it in the TEXT domain, holding back just a
+      // trailing partial-prefix so a sentinel spanning deltas is still caught.
+      const stripSentinelText = (incoming) => {
+        textCarry += incoming;
+        if (textCarry.includes(refusal_key)) {
+          refusalDetected = true;
+          textCarry = textCarry.split(refusal_key).join('');
+        }
+        let hold = 0;
+        const maxK = Math.min(textCarry.length, refusal_key.length - 1);
+        for (let k = maxK; k > 0; k--) {
+          if (textCarry.slice(textCarry.length - k) === refusal_key.slice(0, k)) { hold = k; break; }
+        }
+        const outText = hold > 0 ? textCarry.slice(0, textCarry.length - hold) : textCarry;
+        textCarry = hold > 0 ? textCarry.slice(textCarry.length - hold) : '';
+        return outText;
+      };
+
+      // Rewrites one SSE event: cleans the sentinel out of response.text.delta payloads,
+      // passes everything else through untouched.
+      const transformSseEvent = (rawEvent) => {
+        const lines = rawEvent.split(/\r?\n/);
+        let evt = null, dataIdx = -1, dataStr = null;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith('event:')) evt = lines[i].slice(6).trim();
+          else if (lines[i].startsWith('data:')) { dataIdx = i; dataStr = lines[i].slice(5).trim(); }
+        }
+        if (evt === 'response.text.delta' && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            if (typeof obj.text === 'string') {
+              obj.text = stripSentinelText(obj.text);
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+        return rawEvent;
+      };
+
+      const EVENT_SEP = /\r?\n\r?\n/;
 
       // Guards against finalizing the LangSmith run twice — both the upstream 'end'
       // and client 'close' handlers can fire; without this flag they'd each start
@@ -999,9 +1141,20 @@ if (!hasEnoughCredits) {
       let clientAborted = false;
 
       upstreamResponse.on('data', chunk => {
-        fullStreamText += decoder.decode(chunk, { stream: true });
+        const text = decoder.decode(chunk, { stream: true });
+        fullStreamText += text;        // full raw text — used for token / request-id parsing
         if (res.writableEnded) return; // client may have cancelled
-        if (!res.write(chunk)) {
+
+        // Forward complete SSE events, stripping the sentinel from text deltas as we go.
+        sseBuf += text;
+        let outBuf = '';
+        let match;
+        while ((match = EVENT_SEP.exec(sseBuf)) !== null) {
+          const rawEvent = sseBuf.slice(0, match.index);
+          sseBuf = sseBuf.slice(match.index + match[0].length);
+          outBuf += transformSseEvent(rawEvent) + match[0];
+        }
+        if (outBuf && !res.write(Buffer.from(outBuf, 'utf8'))) {
           upstreamResponse.pause();
           res.once('drain', () => upstreamResponse.resume());
         }
@@ -1024,6 +1177,29 @@ if (!hasEnoughCredits) {
             // No usage parsed — dump the tail of the stream so the token path can be confirmed
             console.log('🔍 No tokens parsed; stream tail:', fullStreamText.slice(-800));
           }
+          // Flush the last buffered SSE event (response.completed often has no trailing blank
+          // line), then any held-back real text (sentinel already removed) as a final delta.
+          if (!res.writableEnded) {
+            if (sseBuf) { res.write(Buffer.from(transformSseEvent(sseBuf), 'utf8')); sseBuf = ''; }
+            const leftover = textCarry.split(refusal_key).join('');
+            textCarry = '';
+            if (leftover) writeSseEvent(res, 'response.text.delta', { text: leftover });
+          }
+
+          // If the sentinel was stripped, the agent refused — refund so the net charge is 1.
+          const refused = refusalDetected;
+          let finalCreditsLeft = creditsLeft;
+          if (hasEnoughCredits && chargedCost > 1 && refused) {
+            const refund = chargedCost - 1; // category cost consumed, minus 1
+            const endUserId = process.env.USER_ID || 'unknown_user';
+            const newBal = refundCredits(endUserId, refund);
+            if (newBal != null) {
+              finalCreditsLeft = newBal;
+              console.log(`\u21a9\ufe0f  Refusal sentinel stripped \u2014 refunded ${refund}, net charge 1, credits left: ${newBal}`);
+              if (!res.writableEnded) writeSseEvent(res, 'response.credits_adjusted', { creditsLeft: newBal });
+            }
+          }
+
           closeRunWithCredits(langsmithRunId, {
             output: fullStreamText,
             status: statusCode,
@@ -1033,7 +1209,7 @@ if (!hasEnoughCredits) {
             expectedSize,
             inputTokens,
             outputTokens,
-            creditsLeft,
+            creditsLeft: finalCreditsLeft,
           });
         }
 

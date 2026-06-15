@@ -31,7 +31,7 @@ export const UsagePopover: React.FC<UsagePopoverProps> = ({ usage, anchorEl, onC
   const remainingPct = creditAllowance > 0
     ? Math.min(Math.max((creditsLeft / creditAllowance) * 100, 0), 100)
     : 0;
-  const barColor = remainingPct <= 10 ? '#ef4444' : remainingPct <= 25 ? '#f59e0b' : '#0c6ae9';
+  const barColor = remainingPct < 20 ? '#ef4444' : remainingPct < 50 ? '#f59e0b' : '#0c6ae9';
   const fmt = (n: number) => n.toLocaleString('en-US');
 
   return (
