@@ -447,6 +447,141 @@ const fetchCredits = async (requestId) => {
 };
 
 // ============================================================================
+// Snowflake Response Logging  (in addition to LangSmith)
+// ============================================================================
+//
+// Writes one row per completed query to a Snowflake table so every response —
+// plus its metadata, tokens, latency, credits and cost — is queryable in the
+// warehouse alongside LangSmith. Fire-and-forget: a logging failure never blocks
+// or fails the user response.
+//
+// The target table is HARDCODED below (admin-created; the app only has INSERT).
+// Only the warehouse/role are env-tunable:
+//   CORTEX_LOG_WAREHOUSE=...   (optional; defaults to SNOWFLAKE_WAREHOUSE)
+//   CORTEX_LOG_ROLE=...        (optional; defaults to SNOWFLAKE_ROLE)
+const CORTEX_LOG_TABLE     = 'PRE_PROD_DB.RPT_AWB.GENAI_USAGE_LOG_V2'; // hardcoded: admin-created table, not configurable via env
+const CORTEX_LOG_ENABLED   = Boolean(CORTEX_LOG_TABLE);
+const CORTEX_LOG_WAREHOUSE = process.env.CORTEX_LOG_WAREHOUSE || process.env.SNOWFLAKE_WAREHOUSE || 'wh_agent_demo';
+const CORTEX_LOG_ROLE      = process.env.CORTEX_LOG_ROLE || process.env.SNOWFLAKE_ROLE || undefined;
+if (CORTEX_LOG_ENABLED) console.log('🗄️  Cortex response logging -> ' + CORTEX_LOG_TABLE);
+
+/** Iterates SSE events as (eventName, dataString) pairs. CRLF-safe. */
+const iterateSseEvents = (sseText, cb) => {
+  for (const rawEvent of String(sseText || '').split(/\r?\n\r?\n/)) {
+    let evt = null, dataStr = null;
+    for (const l of rawEvent.split(/\r?\n/)) {
+      if (l.startsWith('event:')) evt = l.slice(6).trim();
+      else if (l.startsWith('data:')) dataStr = (dataStr || '') + l.slice(5).trim();
+    }
+    if (evt) cb(evt, dataStr);
+  }
+};
+
+/** Concatenated answer text from response.text.delta events (refusal sentinel removed). */
+const extractAnswerTextFromSSE = (sseText) => {
+  let out = '';
+  iterateSseEvents(sseText, (evt, data) => {
+    if (evt === 'response.text.delta' && data && data.startsWith('{')) {
+      try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
+    }
+  });
+  return out.split(refusal_key).join('').trim();
+};
+
+/** Concatenated chain-of-thought from any response.*thinking* delta events. */
+const extractThinkingFromSSE = (sseText) => {
+  let out = '';
+  iterateSseEvents(sseText, (evt, data) => {
+    if (evt && evt.includes('thinking') && data && data.startsWith('{')) {
+      try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
+    }
+  });
+  return out.trim();
+};
+
+/** Pulls the latest user message text out of the request body. */
+const extractUserInput = (requestBody) => {
+  const msgs = Array.isArray(requestBody && requestBody.messages) ? requestBody.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i] && msgs[i].role === 'user') {
+      const c = msgs[i].content;
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) return c.map(p => (p && (p.text || p.content)) || '').join(' ').trim();
+    }
+  }
+  return '';
+};
+
+/**
+ * Inserts one row into CORTEX_LOG_TABLE via the Snowflake SQL REST API using bound
+ * parameters (no string interpolation of user content). Numeric columns are parsed
+ * with TRY_TO_*, so missing values become NULL rather than failing the insert.
+ *
+ * Field meanings:
+ *   credits      = Snowflake TOKEN_CREDITS consumed by the agent (ACCOUNT_USAGE)
+ *   costUSD      = credits * CREDIT_COST_USD
+ *   creditsUsed  = app-side category charge deducted from the user's balance
+ *   creditsLeft  = user's remaining balance after the charge
+ */
+const logCortexResponseToSnowflake = async (f = {}) => {
+  if (!CORTEX_LOG_ENABLED) return;
+  try {
+    const totalTokens = (f.inputTokens != null || f.outputTokens != null)
+      ? (Number(f.inputTokens) || 0) + (Number(f.outputTokens) || 0)
+      : null;
+
+    const sql = `INSERT INTO ${CORTEX_LOG_TABLE}
+  (TS, REQUEST_ID, RUN_ID, USER_ID, PILOT_NAME, CATEGORY, STATUS,
+   INPUT, THINKING, OUTPUT,
+   INPUT_TOKENS, OUTPUT_TOKENS, TOTAL_TOKENS,
+   LATENCY_MS, OUTPUT_STORAGE_SIZE_MB,
+   CREDITS, COST_USD, CREDITS_USED, CREDITS_LEFT, METADATA)
+SELECT
+  TO_TIMESTAMP_NTZ(?), ?, ?, ?, ?, ?, TRY_TO_NUMBER(?),
+  ?, ?, ?,
+  TRY_TO_NUMBER(?), TRY_TO_NUMBER(?), TRY_TO_NUMBER(?),
+  TRY_TO_NUMBER(?), TRY_TO_DOUBLE(?),
+  TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), PARSE_JSON(?)`;
+
+    // NOT NULL identifier columns: substitute the sentinel '-1' when an id was never
+    // assigned (e.g. no Snowflake request_id on the no-id path, or run_id with LangSmith off).
+    const idOrSentinel = (v) => (v == null || v === '') ? '-1' : String(v);
+
+    const vals = [
+      f.tsIso || new Date().toISOString(),
+      idOrSentinel(f.requestId), idOrSentinel(f.runId), idOrSentinel(f.userId), f.agentName, f.category, f.status,
+      f.input, f.thinking, f.output,
+      f.inputTokens, f.outputTokens, totalTokens,
+      f.latencyMs, f.outputSizeMb,
+      f.credits, f.costUSD, f.creditsUsed, f.creditsLeft,
+      JSON.stringify(f.metadata || {}),
+    ];
+    const bindings = {};
+    vals.forEach((v, i) => { bindings[String(i + 1)] = { type: 'TEXT', value: v == null ? '' : String(v) }; });
+
+    const resp = await fetch(`https://${SNOWFLAKE_CONFIG.host}/api/v2/statements`, {
+      method: 'POST',
+      headers: getSnowflakeAuthHeaders(),
+      body: JSON.stringify({
+        statement: sql,
+        bindings,
+        warehouse: CORTEX_LOG_WAREHOUSE,
+        role: CORTEX_LOG_ROLE,
+        timeout: 60,
+      }),
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      console.warn(`⚠️  Snowflake log insert failed (${resp.status}): ${String(t).slice(0, 300)}`);
+    } else {
+      console.log(`🗄️  Logged response to ${CORTEX_LOG_TABLE} (run ${f.runId || 'n/a'})`);
+    }
+  } catch (err) {
+    console.warn('⚠️  logCortexResponseToSnowflake failed:', err.message);
+  }
+};
+
+// ============================================================================
 // LangSmith Tracing
 // ============================================================================
 
@@ -564,17 +699,32 @@ const buildUsageMetadata = ({ inputTokens, outputTokens, costUSD } = {}) => {
  * Polling schedule (seconds after stream end):
  *   10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300
  */
-const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens, creditsLeft }) => {
-  if (!langsmith || !runId) return;
+const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens, creditsLeft, log }) => {
+  if ((!langsmith || !runId) && !CORTEX_LOG_ENABLED) return;
+
+  // Mirror the resolved result (with credits/cost once known) into the Snowflake log table.
+  const writeSnowflakeLog = (creditsObj) => logCortexResponseToSnowflake({
+    ...(log || {}),
+    runId: (log && log.runId) || runId,
+    status, latencyMs, requestId,
+    inputTokens, outputTokens,
+    outputSizeMb: expectedSize,
+    creditsLeft,
+    credits: creditsObj ? creditsObj.credits : null,
+    costUSD: creditsObj ? creditsObj.costUSD : null,
+  });
 
   // No request ID — nothing to look up, close immediately instead of spinning 300s
   if (!requestId) {
     const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
-    langsmith.updateRun(runId, {
-      outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
-      end_time: streamEndTime,
-      extra: { metadata: { status, latencyMs, streamed: true } },
-    }).catch(err => console.warn('⚠️ LangSmith updateRun failed:', err.message));
+    if (langsmith && runId) {
+      langsmith.updateRun(runId, {
+        outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
+        end_time: streamEndTime,
+        extra: { metadata: { status, latencyMs, streamed: true } },
+      }).catch(err => console.warn('⚠️ LangSmith updateRun failed:', err.message));
+    }
+    writeSnowflakeLog(null);
     return;
   }
 
@@ -591,7 +741,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
 
       if (credits) {
         const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens, costUSD: credits.costUSD });
-        await langsmith.updateRun(runId, {
+        if (langsmith && runId) await langsmith.updateRun(runId, {
           outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime, // actual stream end, not now
           extra: {
@@ -605,6 +755,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
             },
           },
         });
+        writeSnowflakeLog(credits);
         console.log(`💳 Credits found at +${elapsed}s — ${credits.credits} credits = $${credits.costUSD.toFixed(4)}`);
         return;
       }
@@ -617,11 +768,12 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
         // All 300s exhausted — close without credits rather than leave the run open
         console.warn(`⚠️ No credit data after +${elapsed}s, closing run without credits`);
         const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
-        await langsmith.updateRun(runId, {
+        if (langsmith && runId) await langsmith.updateRun(runId, {
           outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime,
           extra: { metadata: { status, latencyMs, streamed: true, output_size_mb: expectedSize } },
         });
+        writeSnowflakeLog(null);
       }
     } catch (err) {
       console.warn(`⚠️ closeRunWithCredits attempt ${attempt} failed:`, err.message);
@@ -974,6 +1126,22 @@ if (!hasEnoughCredits) {
 });
 
 
+ logCortexResponseToSnowflake({
+  runId: langsmithRunId,
+  userId: process.env.USER_ID || 'unknown_user',
+  agentName,
+  category: requestBody.metadata?.category || null,
+  input: extractUserInput(requestBody),
+  output: 'Insufficient credits',
+  thinking: '',
+  status: 402,
+  latencyMs: Date.now() - startTime,
+  creditsUsed: 0,
+  creditsLeft: 0,
+  tsIso: new Date(startTime).toISOString(),
+  metadata: { source: 'insufficient_credits', has_enough_credits: false },
+ });
+
  return res.status(402).json({
   message: 'Insufficient credits',
   creditsLeft: 0,
@@ -1021,6 +1189,21 @@ if (!hasEnoughCredits) {
  },
 });
 
+      logCortexResponseToSnowflake({
+        runId: langsmithRunId,
+        userId: process.env.USER_ID || 'unknown_user',
+        agentName,
+        category: requestBody.metadata?.category || null,
+        input: extractUserInput(requestBody),
+        output: errorParts.join('\n'),
+        thinking: '',
+        status: statusCode,
+        latencyMs: Date.now() - startTime,
+        creditsUsed: chargedCost,
+        creditsLeft,
+        tsIso: new Date(startTime).toISOString(),
+        metadata: { source: 'agent_error' },
+      });
       return res.status(statusCode).json({ errorParts });
     }
 
@@ -1172,6 +1355,18 @@ if (!hasEnoughCredits) {
             inputTokens,
             outputTokens,
             creditsLeft: finalCreditsLeft,
+            log: {
+              runId: langsmithRunId,
+              userId: process.env.USER_ID || 'unknown_user',
+              agentName,
+              category: requestBody.metadata?.category || null,
+              input: extractUserInput(requestBody),
+              output: extractAnswerTextFromSSE(fullStreamText),
+              thinking: extractThinkingFromSSE(fullStreamText),
+              creditsUsed: chargedCost,
+              tsIso: new Date(startTime).toISOString(),
+              metadata: { source: 'stream_end', refused, snowflake_request_id: finalRequestId },
+            },
           });
         }
 
@@ -1206,6 +1401,18 @@ if (!hasEnoughCredits) {
               inputTokens,
               outputTokens,
               creditsLeft,
+              log: {
+                runId: langsmithRunId,
+                userId: process.env.USER_ID || 'unknown_user',
+                agentName,
+                category: requestBody.metadata?.category || null,
+                input: extractUserInput(requestBody),
+                output: extractAnswerTextFromSSE(fullStreamText),
+                thinking: extractThinkingFromSSE(fullStreamText),
+                creditsUsed: chargedCost,
+                tsIso: new Date(startTime).toISOString(),
+                metadata: { source: 'client_abort_error', snowflake_request_id: finalRequestId },
+              },
             });
           }
           return;
@@ -1253,6 +1460,18 @@ if (!hasEnoughCredits) {
           inputTokens,
           outputTokens,
           creditsLeft,
+          log: {
+            runId: langsmithRunId,
+            userId: process.env.USER_ID || 'unknown_user',
+            agentName,
+            category: requestBody.metadata?.category || null,
+            input: extractUserInput(requestBody),
+            output: extractAnswerTextFromSSE(fullStreamText),
+            thinking: extractThinkingFromSSE(fullStreamText),
+            creditsUsed: chargedCost,
+            tsIso: new Date(startTime).toISOString(),
+            metadata: { source: 'client_close', snowflake_request_id: finalRequestId },
+          },
         });
       });
 
@@ -1273,6 +1492,22 @@ if (!hasEnoughCredits) {
  },
 });
 
+      logCortexResponseToSnowflake({
+        runId: langsmithRunId,
+        userId: process.env.USER_ID || 'unknown_user',
+        agentName,
+        category: requestBody.metadata?.category || null,
+        input: extractUserInput(requestBody),
+        output: typeof data === 'string' ? data : JSON.stringify(data),
+        thinking: '',
+        status: statusCode,
+        latencyMs: Date.now() - startTime,
+        creditsUsed: chargedCost,
+        creditsLeft,
+        outputSizeMb: (JSON.stringify(data).length * 1e-6).toFixed(4),
+        tsIso: new Date(startTime).toISOString(),
+        metadata: { source: 'non_streaming', snowflake_request_id: snowflakeRequestId },
+      });
       res.json(data);
     }
 
@@ -1292,7 +1527,23 @@ if (!hasEnoughCredits) {
   },
  });
 
-
+ try {
+   logCortexResponseToSnowflake({
+     runId: langsmithRunId,
+     userId: process.env.USER_ID || 'unknown_user',
+     agentName: req.params.agentName,
+     category: (req.body && req.body.metadata && req.body.metadata.category) || null,
+     input: extractUserInput(req.body),
+     output: (sanitizeError(error) || {}).message || 'error',
+     thinking: '',
+     status: 500,
+     latencyMs: Date.now() - startTime,
+     creditsUsed: null,
+     creditsLeft: null,
+     tsIso: new Date(startTime).toISOString(),
+     metadata: { source: 'server_error' },
+   });
+ } catch (_) { /* never let logging break the error path */ }
 
     if (!res.headersSent) {
       // Raw https exposes connection failures on error.code; fetch puts them on error.cause.code
