@@ -158,7 +158,7 @@ export const TEXT_CONSTANTS = {
     NO_READABLE_STREAM: 'No readable stream available',
     RESPONSE_COMPLETED: 'Response completed',
     // Error Formatting
-    ERROR_PREFIX: 'PAWS right there! We have hit a snag :(',
+    ERROR_PREFIX: 'Something went wrong.',
     HTTP_ERROR_STATUS: 'HTTP Code:',
     USER_CANCELED: 'User canceled the request',
     
