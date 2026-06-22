@@ -138,24 +138,19 @@ setInterval(tick, 60 * 1000); // re-check every minute
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Eval Runner
-// Runs the evaluator_setup pipeline on the EVALS_RESET cadence, reusing the same
-// period-boundary logic as the credit reset (state in evals_reset_state.json so a
-// restart never double-runs or misses a boundary). On each boundary it refreshes
-// the LangSmith dataset from the golden CSV (dataset_updater.py) and then runs the
-// evaluation (evaluator.py). Disabled when EVALS_RESET is unset.
+// Fires the eval pipeline on the EVALS_RESET cadence, reusing the same
+// period-boundary logic as the credit reset (state in evals_reset_state.json).
+// The actual run lives in run_eval.js so it can also be triggered standalone:
+//     node server/run_eval.js
 //
-// Config (env vars):
-//   EVALS_RESET — minute | hour | day | week | month   (unset = disabled)
+//   EVALS_RESET — minute | hour | day | week | month   (default: week)
 // ──────────────────────────────────────────────────────────────────────────────
-const EVALS_RESET     = (process.env.EVALS_RESET || '').toLowerCase();
-const EVAL_STATE_PATH = path.resolve(__dirname, '../evals_reset_state.json');
-const EVAL_DIR        = path.resolve(__dirname, '../evaluator_setup');
-const VENV_PYTHON     = path.resolve(__dirname, '../.venv/bin/python');
-const ENV_FILE        = path.resolve(__dirname, '../.env');
+const { runEval } = require('./run_eval');
 
-if (!EVALS_RESET) {
-  console.log('🧪 Eval runner disabled (set EVALS_RESET=minute|hour|day|week|month to enable)');
-} else if (!['minute', 'hour', 'day', 'week', 'month'].includes(EVALS_RESET)) {
+const EVALS_RESET     = (process.env.EVALS_RESET || 'week').toLowerCase();  // default: weekly
+const EVAL_STATE_PATH = path.resolve(__dirname, '../evals_reset_state.json');
+
+if (!['minute', 'hour', 'day', 'week', 'month'].includes(EVALS_RESET)) {
   console.error(`❌ Invalid EVALS_RESET "${EVALS_RESET}". Must be: minute | hour | day | week | month`);
 } else {
   const loadLastEval = () => {
@@ -171,39 +166,13 @@ if (!EVALS_RESET) {
     fs.writeFileSync(EVAL_STATE_PATH, JSON.stringify({ lastRun: date.toISOString() }), 'utf8');
   };
 
-  let evalRunning = false;
-
-  // Refresh the dataset, then run the eval. cwd = evaluator_setup so the scripts
-  // resolve Golden_questions.csv and the project .env correctly.
-  const runEval = () => {
-    if (evalRunning) { console.log('🧪 Eval already running — skipping this boundary'); return; }
-    const python = fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : 'python3';
-    evalRunning = true;
-    const startedAt = new Date();
-    // Mark the boundary handled up front so a long run can't re-trigger mid-flight.
-    saveLastEval(startedAt);
-    console.log(`🧪 [${startedAt.toISOString()}] Starting eval pipeline (interval: ${EVALS_RESET}) — python: ${python}`);
-
-  
-    child.stdout.on('data', d => process.stdout.write(`[eval] ${d}`));
-    child.stderr.on('data', d => process.stderr.write(`[eval] ${d}`));
-    child.on('close', code => {
-      evalRunning = false;
-      console.log(`🧪 [${new Date().toISOString()}] Eval pipeline exited with code ${code}`);
-    });
-    child.on('error', err => {
-      evalRunning = false;
-      console.error('❌ Failed to start eval pipeline:', err.message);
-    });
-  };
-
   const evalTick = () => {
     const now         = new Date();
     const periodStart = currentPeriodStart(now, EVALS_RESET);
     const lastRun     = loadLastEval();
-    const due = !lastRun || lastRun < periodStart;
-    if (due) {
+    if (!lastRun || lastRun < periodStart) {
       console.log(`⏰ [${now.toISOString()}] Eval boundary crossed — running eval`);
+      saveLastEval(now);   // mark handled up front so a long run can't re-trigger
       runEval();
     }
   };
