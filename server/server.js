@@ -19,6 +19,7 @@
  * - LangSmith latency reflects only the actual agent response time (not the polling wait).
  */
 const refusal_key="hdhkashqhdkjasdhaskhddkjas";
+const scrub_terms = ["nothing else, then pass the marker","nothing else, then pass the out-of-scope marker."];   // removed from answer AND thinking text; NO refund
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -45,10 +46,32 @@ function resolveResetCredits() {
 const RESET_CREDITS = resolveResetCredits();
 console.log('Credit allowance (RESET_CREDITS): ' + RESET_CREDITS);
 
+// ── computer_sleep_connection_break key ledger ─────────────────────────────────────────────────────
+// Tracks computer_sleep_connection_break keys that have already been charged, so a query that is
+// auto-resumed by the client (e.g. after the computer slept mid-stream) and
+// arrives again with the SAME key is NOT billed a second time. In-memory with
+// a TTL — covers the resume window without growing unbounded.
+const CHARGED_KEYS = new Map();
+const CHARGED_KEY_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const getPriorCharge = (key) => {
+  const entry = CHARGED_KEYS.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CHARGED_KEY_TTL_MS) { CHARGED_KEYS.delete(key); return null; }
+  return entry;
+};
+const rememberCharge = (key, creditsLeft) => {
+  CHARGED_KEYS.set(key, { creditsLeft, ts: Date.now() });
+  if (CHARGED_KEYS.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of CHARGED_KEYS) {
+      if (now - v.ts > CHARGED_KEY_TTL_MS) CHARGED_KEYS.delete(k);
+    }
+  }
+};
+
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
 const PORT = process.env.PORT || process.env.SERVER_PORT || CONFIG.DEFAULT_PORT;
-
 // ============================================================================
 // Configuration & Validation
 // ============================================================================
@@ -132,7 +155,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Accept', 'X-Computer-Sleep-Connection-Break-Key'],
   exposedHeaders: ['X-Credits-Left', 'X-Charged-Cost', 'X-Has-Enough-Credits'],
 };
 
@@ -485,7 +508,9 @@ const extractAnswerTextFromSSE = (sseText) => {
       try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
     }
   });
-  return out.split(refusal_key).join('').trim();
+  let cleaned = out.split(refusal_key).join('');
+  for (const t of scrub_terms) cleaned = cleaned.split(t).join('');
+  return cleaned.trim();
 };
 
 /** Concatenated chain-of-thought from any response.*thinking* delta events. */
@@ -496,7 +521,9 @@ const extractThinkingFromSSE = (sseText) => {
       try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
     }
   });
-  return out.trim();
+  let cleaned = out;
+  for (const t of scrub_terms) cleaned = cleaned.split(t).join('');
+  return cleaned.trim();
 };
 
 /** Pulls the latest user message text out of the request body. */
@@ -1022,7 +1049,17 @@ let creditsLeft = 0;
 let chargedCost = 0;
 let hasEnoughCredits = true;
 
-try {
+// If this exact query was already charged (a client auto-resume after a
+// dropped connection sends the same X-Computer-Sleep-Connection-Break-Key), skip the deduction.
+const computerSleepConnectionBreakKey = req.headers['x-computer-sleep-connection-break-key'] || null;
+const priorCharge = computerSleepConnectionBreakKey ? getPriorCharge(computerSleepConnectionBreakKey) : null;
+
+if (priorCharge) {
+ chargedCost = 0;
+ creditsLeft = priorCharge.creditsLeft;
+ hasEnoughCredits = true;
+ console.log(`♻️  Resume after computer sleep / connection break (key ${computerSleepConnectionBreakKey}) — no credits charged. Credits left: ${creditsLeft}`);
+} else try {
  const fs = require('fs');
  const csvRaw = fs.existsSync(USER_TRACKER_PATH)
  ? fs.readFileSync(USER_TRACKER_PATH, 'utf8')
@@ -1099,6 +1136,11 @@ try {
  }
 } catch (csvErr) {
  console.warn('⚠️ Could not read/write user_tracker.csv:', csvErr.message);
+}
+
+// Record this charge so a later auto-resume with the same key is free.
+if (computerSleepConnectionBreakKey && hasEnoughCredits && !priorCharge) {
+ rememberCharge(computerSleepConnectionBreakKey, creditsLeft);
 }
 
 // ── Signal updated credits to the client immediately (as soon as the request
@@ -1240,17 +1282,43 @@ if (!hasEnoughCredits) {
       const stripSentinelText = (incoming) => {
         textCarry += incoming;
         if (textCarry.includes(refusal_key)) {
-          refusalDetected = true;
+          refusalDetected = true;                       // sentinel -> triggers refund
           textCarry = textCarry.split(refusal_key).join('');
         }
+        for (const term of scrub_terms) {               // phrase -> removed, no refund
+          if (textCarry.includes(term)) textCarry = textCarry.split(term).join('');
+        }
         let hold = 0;
-        const maxK = Math.min(textCarry.length, refusal_key.length - 1);
+        const tokens = [refusal_key, ...scrub_terms];
+        const maxLen = Math.max(...tokens.map(t => t.length));
+        const maxK = Math.min(textCarry.length, maxLen - 1);
         for (let k = maxK; k > 0; k--) {
-          if (textCarry.slice(textCarry.length - k) === refusal_key.slice(0, k)) { hold = k; break; }
+          const tail = textCarry.slice(textCarry.length - k);
+          if (tokens.some(t => t.slice(0, k) === tail)) { hold = k; break; }
         }
         const outText = hold > 0 ? textCarry.slice(0, textCarry.length - hold) : textCarry;
         textCarry = hold > 0 ? textCarry.slice(textCarry.length - hold) : '';
         return outText;
+      };
+
+      // Same hold-back logic for the THINKING stream (the phrase is split across many tiny
+      // deltas). Never sets refusalDetected — scrubbing a leaked phrase must not refund.
+      let thinkingCarry = '';
+      const stripThinkingText = (incoming) => {
+        thinkingCarry += incoming;
+        for (const term of scrub_terms) {
+          if (thinkingCarry.includes(term)) thinkingCarry = thinkingCarry.split(term).join('');
+        }
+        let hold = 0;
+        const maxLen = Math.max(...scrub_terms.map(t => t.length));
+        const maxK = Math.min(thinkingCarry.length, maxLen - 1);
+        for (let k = maxK; k > 0; k--) {
+          const tail = thinkingCarry.slice(thinkingCarry.length - k);
+          if (scrub_terms.some(t => t.slice(0, k) === tail)) { hold = k; break; }
+        }
+        const out = hold > 0 ? thinkingCarry.slice(0, thinkingCarry.length - hold) : thinkingCarry;
+        thinkingCarry = hold > 0 ? thinkingCarry.slice(thinkingCarry.length - hold) : '';
+        return out;
       };
 
       // Rewrites one SSE event: cleans the sentinel out of response.text.delta payloads,
@@ -1262,11 +1330,13 @@ if (!hasEnoughCredits) {
           if (lines[i].startsWith('event:')) evt = lines[i].slice(6).trim();
           else if (lines[i].startsWith('data:')) { dataIdx = i; dataStr = lines[i].slice(5).trim(); }
         }
-        if (evt === 'response.text.delta' && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+        const isText = evt === 'response.text.delta';
+        const isThinking = evt && evt.includes('thinking');
+        if ((isText || isThinking) && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
           try {
             const obj = JSON.parse(dataStr);
             if (typeof obj.text === 'string') {
-              obj.text = stripSentinelText(obj.text);
+              obj.text = isText ? stripSentinelText(obj.text) : stripThinkingText(obj.text);
               lines[dataIdx] = 'data: ' + JSON.stringify(obj);
               return lines.join('\n');
             }
@@ -1326,9 +1396,14 @@ if (!hasEnoughCredits) {
           // line), then any held-back real text (sentinel already removed) as a final delta.
           if (!res.writableEnded) {
             if (sseBuf) { res.write(Buffer.from(transformSseEvent(sseBuf), 'utf8')); sseBuf = ''; }
-            const leftover = textCarry.split(refusal_key).join('');
+            let leftover = textCarry.split(refusal_key).join('');
+            for (const t of scrub_terms) leftover = leftover.split(t).join('');
             textCarry = '';
             if (leftover) writeSseEvent(res, 'response.text.delta', { text: leftover });
+            let leftoverThinking = thinkingCarry;
+            for (const t of scrub_terms) leftoverThinking = leftoverThinking.split(t).join('');
+            thinkingCarry = '';
+            if (leftoverThinking) writeSseEvent(res, 'response.thinking.delta', { text: leftoverThinking });
           }
 
           // If the sentinel was stripped, the agent refused — refund so the net charge is 1.

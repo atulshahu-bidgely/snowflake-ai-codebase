@@ -151,7 +151,7 @@ Return only:
 	   - Do NOT describe columns; return actual data rows only.
 	   - Choose the most relevant columns dynamically based on the question.
 	Do not include internal reasoning, query-planning narration, sources, or CSV download text.
-4)if applicable , only consider users with a consumption > 0 unless explicitly stated not to above also state at the end if consumption > 0 users only shown`;
+4)if applicable , only consider users with a consumption > 0 unless explicitly stated not to above also DO NOT state at the end if consumption > 0 users only shown`;
   }
   if (isAnalysis) {
     return `${text}\n\nIMPORTANT: This is a consumption analysis or trend question. Provide a detailed but focused summary with trends, breakdowns, drivers, and notable patterns.
@@ -159,10 +159,10 @@ Result limit rule:
 - Default ranked outputs to top ${DEFAULT_RESULT_LIMIT} rows.
 - ${resultLimitText}
 - Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh", or "30 days" are data values. They should not change the row limit.
--if applicable , only consider users with a consumption > 0 unless explicitly stated not to above also state at the end if consumption > 0 users only shown
+-if applicable , only consider users with a consumption > 0 unless explicitly stated not to above also DO NOT state at the end if consumption > 0 users only shown
 Include a chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points when the result is a ranked/top-N output. Do not emit an empty chart or an empty table. Do not include internal reasoning, sources, or CSV download text.`;
   }
-  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal. if applicable ,only consider users with a consumption > 0 unless explicitly stated not to above also state at the end if consumption > 0 users only shown
+  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal. if applicable ,only consider users with a consumption > 0 unless explicitly stated not to above also DO NOT state at the end if consumption > 0 users only shown
 `;
 };
 
