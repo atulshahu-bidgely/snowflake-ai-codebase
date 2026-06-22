@@ -70,7 +70,7 @@ const rememberCharge = (key, creditsLeft) => {
 };
 
 const app = express();
-// Render uses PORT, local dev uses SERVER_PORT
+app.set('trust proxy', 1);// Render uses PORT, local dev uses SERVER_PORT
 const PORT = process.env.PORT || process.env.SERVER_PORT || CONFIG.DEFAULT_PORT;
 // ============================================================================
 // Configuration & Validation

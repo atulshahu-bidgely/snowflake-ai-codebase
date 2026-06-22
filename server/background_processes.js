@@ -184,10 +184,7 @@ if (!EVALS_RESET) {
     saveLastEval(startedAt);
     console.log(`🧪 [${startedAt.toISOString()}] Starting eval pipeline (interval: ${EVALS_RESET}) — python: ${python}`);
 
-    const child = spawn('sh', ['-c', `"${python}" dataset_updater.py && "${python}" evaluator.py`], {
-      cwd: EVAL_DIR,
-      env: { ...process.env, ENV_FILE },
-    });
+  
     child.stdout.on('data', d => process.stdout.write(`[eval] ${d}`));
     child.stderr.on('data', d => process.stderr.write(`[eval] ${d}`));
     child.on('close', code => {
