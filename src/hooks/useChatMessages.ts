@@ -341,53 +341,6 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
                     // Skip malformed chart data
                   }
                 }
-              } else if (currentEvent === 'response.table') {
-                // Streaming table event — convert Snowflake result_set to headers/rows.
-                try {
-                  const rs = data.result_set || (data.table && data.table.result_set);
-                  const headers = ((rs && rs.resultSetMetaData && rs.resultSetMetaData.rowType) || []).map((c: any) => c.name);
-                  const rows = Array.isArray(rs && rs.data)
-                    ? rs.data.map((r: any[]) => r.map((v: any) => (v == null ? '' : String(v))))
-                    : [];
-                  if (headers.length > 0 && rows.length > 0) {
-                    setMessages(prev => prev.map(msg =>
-                      msg.id === assistantMessageId ? { ...msg, serverTable: { headers, rows } } : msg
-                    ));
-                  }
-                } catch { /* skip malformed table */ }
-              } else if (currentEvent === 'response' && Array.isArray(data.content)) {
-                // Authoritative final payload: rebuild charts & table from the complete content[].
-                // This guarantees the chart/table render even if an incremental event was missed.
-                const collectedCharts: any[] = [];
-                let collectedTable: { headers: string[]; rows: string[][] } | null = null;
-                for (const item of data.content) {
-                  if (item && item.type === 'chart' && item.chart && item.chart.chart_spec) {
-                    try {
-                      const spec = JSON.parse(item.chart.chart_spec);
-                      if (hasUsableChartData(spec)) {
-                        collectedCharts.push({ type: 'vega-lite' as const, chart_spec: spec });
-                      }
-                    } catch { /* skip */ }
-                  } else if (item && item.type === 'table' && item.table && item.table.result_set) {
-                    const rs = item.table.result_set;
-                    const headers = ((rs.resultSetMetaData && rs.resultSetMetaData.rowType) || []).map((c: any) => c.name);
-                    const rows = Array.isArray(rs.data)
-                      ? rs.data.map((r: any[]) => r.map((v: any) => (v == null ? '' : String(v))))
-                      : [];
-                    if (headers.length > 0 && rows.length > 0) collectedTable = { headers, rows };
-                  }
-                }
-                if (collectedCharts.length > 0 || collectedTable) {
-                  setMessages(prev => prev.map(msg =>
-                    msg.id === assistantMessageId
-                      ? {
-                          ...msg,
-                          charts: collectedCharts.length > 0 ? collectedCharts : msg.charts,
-                          serverTable: collectedTable || msg.serverTable,
-                        }
-                      : msg
-                  ));
-                }
               } else if (currentEvent === 'response.text.annotation') {
                 // Handle annotations (citations, sources, references, etc.)
                 if (data) {
