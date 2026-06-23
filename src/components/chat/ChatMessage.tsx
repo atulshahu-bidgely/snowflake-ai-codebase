@@ -244,6 +244,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               />
             )}
 
+            {/* Server-provided result table (response.table / final response event) */}
+            {isAssistant &&
+             !targetTable &&
+             message.serverTable &&
+             message.serverTable.headers.length > 0 &&
+             message.status === 'sent' &&
+             !message.isStreaming && (
+              <CsvSection
+                headers={message.serverTable.headers}
+                rows={message.serverTable.rows}
+              />
+            )}
+
             {/* Error */}
             {message.status === 'error' && message.error?.trim() && (
               <Box

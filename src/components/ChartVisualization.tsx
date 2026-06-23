@@ -693,7 +693,10 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   }
                   return value;
                 }}
-                domain={['dataMin * 0.95', 'dataMax * 1.1']}
+                domain={[
+                  (dMin: number) => (typeof dMin === 'number' && isFinite(dMin) ? dMin * 0.95 : 0),
+                  (dMax: number) => (typeof dMax === 'number' && isFinite(dMax) ? dMax * 1.1 : 0),
+                ]}
                 width={70}
               />
               <Tooltip 

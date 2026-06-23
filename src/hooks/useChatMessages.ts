@@ -2,7 +2,7 @@
  * useChatMessages Hook
  * Manages chat message state and streaming logic
  */
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types/chat';
 import { ChartContent } from '../types/chart';
 import { config } from '../config/env';
@@ -13,48 +13,103 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // --- Sleep / wake recovery -------------------------------------------------
+  // When the computer sleeps mid-query the streaming socket dies, so the
+  // in-flight fetch rejects (in Safari with "Load failed"). We detect the wake
+  // and resume the query in place instead of surfacing a raw network error.
+  const MAX_SLEEP_RETRIES = 3;
+  const SLEEP_RETRY_DELAY_MS = 1500;
+  const RECONNECTING_STATUS = 'Connection dropped — reconnecting…';
+  const sendMessageRef = useRef<((...args: any[]) => any) | null>(null);
+  const lastRequestRef = useRef<{
+    message: string;
+    displayText?: string;
+    isTarget?: boolean;
+    isAnalysis?: boolean;
+    category?: string;
+    assistantMessageId: string;
+  } | null>(null);
+  const retryCountRef = useRef(0);
+  const wokeRecentlyRef = useRef(false);
+  const sleepAbortRef = useRef(false);
+  const computerSleepConnectionBreakKeyRef = useRef<string>('');
   const sendMessage = useCallback(async (
     message: string,
     displayText?: string,
     isTarget?: boolean,
     isAnalysis?: boolean,
-    category?: string
+    category?: string,
+    opts?: { retryOfId?: string }
   ) => {
     if (!message.trim() || isLoading) return;
-    const messageId = Date.now().toString();
-    const userMessage: ChatMessage = {
-      id: messageId + '_user',
-      text: (displayText ?? message).trim(),
-      sender: 'user',
-      timestamp: new Date()
-    };
-    const assistantMessageId = messageId + '_assistant';
-    const assistantMessage: ChatMessage = {
-      id: assistantMessageId,
-      text: '',
-      sender: 'assistant',
-      timestamp: new Date(),
-      status: 'thinking',
-      isStreaming: true,
-      streamingStatus: undefined,
-      thinkingSteps: [],
-      sqlQueries: [],
-      timeline: [],
-      toolsUsed: [],
-      isTarget: isTarget ?? false,
-      isAnalysis: isAnalysis ?? false,
-    };
-    setMessages(prev => {
-      const newMessages = [...prev, userMessage, assistantMessage];
-      // Trim to max messages to prevent memory issues
-      return newMessages.length > MAX_MESSAGES
-        ? newMessages.slice(-MAX_MESSAGES)
-        : newMessages;
-    });
+    const isRetry = !!opts?.retryOfId;
+    if (!isRetry) retryCountRef.current = 0;
+
+    if (!isRetry) {
+      // Stable key for this user-initiated query; reused on every auto-resume so
+      // the backend charges credits only once even if we reconnect after a sleep.
+      computerSleepConnectionBreakKeyRef.current =
+        (globalThis.crypto && 'randomUUID' in globalThis.crypto)
+          ? globalThis.crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+    const computerSleepConnectionBreakKey = computerSleepConnectionBreakKeyRef.current;
+
+    let assistantMessageId: string;
+    if (isRetry) {
+      // Resume in the existing assistant bubble rather than adding new messages.
+      assistantMessageId = opts!.retryOfId!;
+      setMessages(prev => prev.map(msg =>
+        msg.id === assistantMessageId
+          ? {
+              ...msg,
+              text: '',
+              status: 'thinking' as const,
+              isStreaming: true,
+              streamingStatus: RECONNECTING_STATUS,
+              error: undefined,
+            }
+          : msg
+      ));
+    } else {
+      const messageId = Date.now().toString();
+      const userMessage: ChatMessage = {
+        id: messageId + '_user',
+        text: (displayText ?? message).trim(),
+        sender: 'user',
+        timestamp: new Date()
+      };
+      assistantMessageId = messageId + '_assistant';
+      const assistantMessage: ChatMessage = {
+        id: assistantMessageId,
+        text: '',
+        sender: 'assistant',
+        timestamp: new Date(),
+        status: 'thinking',
+        isStreaming: true,
+        streamingStatus: undefined,
+        thinkingSteps: [],
+        sqlQueries: [],
+        timeline: [],
+        toolsUsed: [],
+        isTarget: isTarget ?? false,
+        isAnalysis: isAnalysis ?? false,
+      };
+      setMessages(prev => {
+        const newMessages = [...prev, userMessage, assistantMessage];
+        // Trim to max messages to prevent memory issues
+        return newMessages.length > MAX_MESSAGES
+          ? newMessages.slice(-MAX_MESSAGES)
+          : newMessages;
+      });
+    }
+    // Remember the request so it can be resumed after a sleep/network drop.
+    lastRequestRef.current = { message, displayText, isTarget, isAnalysis, category, assistantMessageId };
     setIsLoading(true);
     // Create AbortController for this request
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    sleepAbortRef.current = false;
     try {
       const requestBody = {
         messages: [
@@ -83,7 +138,8 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
+          'Accept': 'text/event-stream',
+          'X-Computer-Sleep-Connection-Break-Key': computerSleepConnectionBreakKey
         },
         body: JSON.stringify(requestBody),
         signal: abortController.signal
@@ -131,12 +187,17 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
       let assistantText = '';
       let currentEvent = '';
       let streamErrorMessage = '';
+      let buffer = ''; // holds the unfinished trailing SSE line across reader chunks
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        for (const line of lines) {
+        buffer += decoder.decode(value, { stream: true });
+        // Process only complete (newline-terminated) lines; keep the partial tail
+        // in `buffer` so large events (charts, tables) that span chunks aren't truncated.
+        let nlIdx;
+        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nlIdx);
+          buffer = buffer.slice(nlIdx + 1);
           if (line.startsWith('event: ')) {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith('data: ')) {
@@ -280,6 +341,53 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
                     // Skip malformed chart data
                   }
                 }
+              } else if (currentEvent === 'response.table') {
+                // Streaming table event — convert Snowflake result_set to headers/rows.
+                try {
+                  const rs = data.result_set || (data.table && data.table.result_set);
+                  const headers = ((rs && rs.resultSetMetaData && rs.resultSetMetaData.rowType) || []).map((c: any) => c.name);
+                  const rows = Array.isArray(rs && rs.data)
+                    ? rs.data.map((r: any[]) => r.map((v: any) => (v == null ? '' : String(v))))
+                    : [];
+                  if (headers.length > 0 && rows.length > 0) {
+                    setMessages(prev => prev.map(msg =>
+                      msg.id === assistantMessageId ? { ...msg, serverTable: { headers, rows } } : msg
+                    ));
+                  }
+                } catch { /* skip malformed table */ }
+              } else if (currentEvent === 'response' && Array.isArray(data.content)) {
+                // Authoritative final payload: rebuild charts & table from the complete content[].
+                // This guarantees the chart/table render even if an incremental event was missed.
+                const collectedCharts: any[] = [];
+                let collectedTable: { headers: string[]; rows: string[][] } | null = null;
+                for (const item of data.content) {
+                  if (item && item.type === 'chart' && item.chart && item.chart.chart_spec) {
+                    try {
+                      const spec = JSON.parse(item.chart.chart_spec);
+                      if (hasUsableChartData(spec)) {
+                        collectedCharts.push({ type: 'vega-lite' as const, chart_spec: spec });
+                      }
+                    } catch { /* skip */ }
+                  } else if (item && item.type === 'table' && item.table && item.table.result_set) {
+                    const rs = item.table.result_set;
+                    const headers = ((rs.resultSetMetaData && rs.resultSetMetaData.rowType) || []).map((c: any) => c.name);
+                    const rows = Array.isArray(rs.data)
+                      ? rs.data.map((r: any[]) => r.map((v: any) => (v == null ? '' : String(v))))
+                      : [];
+                    if (headers.length > 0 && rows.length > 0) collectedTable = { headers, rows };
+                  }
+                }
+                if (collectedCharts.length > 0 || collectedTable) {
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                      ? {
+                          ...msg,
+                          charts: collectedCharts.length > 0 ? collectedCharts : msg.charts,
+                          serverTable: collectedTable || msg.serverTable,
+                        }
+                      : msg
+                  ));
+                }
               } else if (currentEvent === 'response.text.annotation') {
                 // Handle annotations (citations, sources, references, etc.)
                 if (data) {
@@ -358,8 +466,36 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
       ));
       return { success: true, assistantMessageId };
     } catch (error) {
-      // Handle abort error specifically
-      if (error instanceof Error && error.name === 'AbortError') {
+      const msgText = error instanceof Error ? error.message : '';
+      const isAbort = error instanceof Error && error.name === 'AbortError';
+      // A connection that dies mid-stream surfaces as a TypeError. Safari reports
+      // "Load failed", Chrome "Failed to fetch" — both are treated as drops.
+      const isNetworkDrop = !isAbort && (
+        error instanceof TypeError ||
+        /load failed|failed to fetch|network|the network connection was lost/i.test(msgText)
+      );
+      // Auto-resume the query after a connection drop — e.g. the computer slept
+      // mid-stream and the socket died. We don't gate on a separate "did we wake?"
+      // signal because, on wake, the dropped-fetch rejection usually fires before
+      // the heartbeat tick runs (a race that was skipping the resume). Any in-flight
+      // network drop is recoverable, so we retry it directly (capped + delayed).
+      if ((isNetworkDrop || (isAbort && sleepAbortRef.current))
+          && retryCountRef.current < MAX_SLEEP_RETRIES) {
+        retryCountRef.current += 1;
+        sleepAbortRef.current = false;
+        setMessages(prev => prev.map(msg =>
+          msg.id === assistantMessageId
+            ? { ...msg, text: '', status: 'thinking' as const, isStreaming: true, streamingStatus: RECONNECTING_STATUS, error: undefined }
+            : msg
+        ));
+        setTimeout(() => {
+          sendMessageRef.current?.(message, displayText, isTarget, isAnalysis, category, { retryOfId: assistantMessageId });
+        }, SLEEP_RETRY_DELAY_MS);
+        return { success: false, error, retrying: true };
+      }
+
+      // Handle user-initiated cancel.
+      if (isAbort) {
         setMessages(prev => prev.map(msg =>
           msg.id === assistantMessageId
             ? {
@@ -373,12 +509,9 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
             : msg
         ));
       } else {
-        // Check if this is a network error (connection lost during streaming)
+        // Never surface a raw "Load failed" — show a friendly connection message.
         let errorMessage: string;
-        if (error instanceof TypeError &&
-            (error.message.includes('network') ||
-             error.message.includes('fetch') ||
-             error.message.includes('Failed to fetch'))) {
+        if (isNetworkDrop) {
           // Network error during streaming - format with ERROR_PREFIX and tips
           errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n\nConnection lost during streaming.\n\n💡 Tip: The backend server at ${config.backendUrl} stopped or crashed, network connection was interrupted, or the backend server is no longer running.`;
         } else {
@@ -405,6 +538,56 @@ export const useChatMessages = (selectedAgent: string, onCreditsLeft?: (creditsL
       abortControllerRef.current = null;
     }
   }, [isLoading, selectedAgent, onCreditsLeft]);
+
+  // Keep a ref to the latest sendMessage so timers/listeners can resume a query.
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  }, [sendMessage]);
+
+  // Detect the machine waking from sleep. While suspended the JS event loop is
+  // frozen, so a heartbeat interval that "skips" far more than its period means
+  // we just woke up. On wake we abort any in-flight stream (its socket is dead)
+  // so the catch handler can resume the query cleanly.
+  useEffect(() => {
+    const HEARTBEAT_MS = 2000;
+    const WAKE_WINDOW_MS = 30000;
+    let last = Date.now();
+    let windowTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const markWoke = () => {
+      wokeRecentlyRef.current = true;
+      if (windowTimer) clearTimeout(windowTimer);
+      windowTimer = setTimeout(() => { wokeRecentlyRef.current = false; }, WAKE_WINDOW_MS);
+      // Tear down the now-dead connection so we can reconnect immediately.
+      if (abortControllerRef.current) {
+        sleepAbortRef.current = true;
+        abortControllerRef.current.abort();
+      }
+    };
+
+    const id = setInterval(() => {
+      const now = Date.now();
+      const gap = now - last;
+      last = now;
+      if (gap > HEARTBEAT_MS + 5000) markWoke();
+    }, HEARTBEAT_MS);
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (now - last > HEARTBEAT_MS + 5000) markWoke();
+        last = now;
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      clearInterval(id);
+      if (windowTimer) clearTimeout(windowTimer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+
   const cancelRequest = useCallback(() => {
     if (abortControllerRef.current && isLoading) {
       abortControllerRef.current.abort();
