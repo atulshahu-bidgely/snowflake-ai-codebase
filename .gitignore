@@ -76,3 +76,6 @@ Thumbs.db
 # package-lock.json should be committed for reproducible builds
 .DS_Store
 spcs/spec.yaml
+credit_reset_state.json
+credit_reset_state.json
+credit_reset_state.json
