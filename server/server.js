@@ -19,7 +19,8 @@
  * - LangSmith latency reflects only the actual agent response time (not the polling wait).
  */
 const refusal_key="hdhkashqhdkjasdhaskhddkjas";
-const scrub_terms = ["nothing else, then pass the marker","nothing else, then pass the out-of-scope marker.", "(Consumption > 0 users only shown)", ", then append the marker."];   // removed from answer AND thinking text; NO refund
+const scrub_terms = ["pass the marker"];   // removed from answer AND thinking text; NO refund
+const followup_key = "xyzhello123xoxoxofollowUp"; // follow-up marker -> FULL refund (net charge 0); out-of-context takes precedence
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -70,8 +71,12 @@ const rememberCharge = (key, creditsLeft) => {
 };
 
 const app = express();
-app.set('trust proxy', 1);// Render uses PORT, local dev uses SERVER_PORT
+// Behind Railway's proxy: trust the first hop so X-Forwarded-For is read correctly
+// (fixes express-rate-limit ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
+app.set('trust proxy', 1);
+// Render uses PORT, local dev uses SERVER_PORT
 const PORT = process.env.PORT || process.env.SERVER_PORT || CONFIG.DEFAULT_PORT;
+
 // ============================================================================
 // Configuration & Validation
 // ============================================================================
@@ -508,7 +513,7 @@ const extractAnswerTextFromSSE = (sseText) => {
       try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
     }
   });
-  let cleaned = out.split(refusal_key).join('');
+  let cleaned = out.split(refusal_key).join('').split(followup_key).join('');
   for (const t of scrub_terms) cleaned = cleaned.split(t).join('');
   return cleaned.trim();
 };
@@ -1274,7 +1279,8 @@ if (!hasEnoughCredits) {
       let fullStreamText = '';
       let sseBuf = '';             // buffers incomplete SSE events across chunks
       let textCarry = '';          // partial-sentinel holdback at the assembled-TEXT level
-      let refusalDetected = false; // set when the sentinel appears in the answer text
+      let refusalDetected = false; // set when the out-of-context sentinel appears in the answer text
+      let followupDetected = false; // set when the follow-up marker appears -> full refund
 
       // The sentinel is split across response.text.delta events, so it is only contiguous once
       // the delta texts are concatenated. Strip it in the TEXT domain, holding back just a
@@ -1282,14 +1288,18 @@ if (!hasEnoughCredits) {
       const stripSentinelText = (incoming) => {
         textCarry += incoming;
         if (textCarry.includes(refusal_key)) {
-          refusalDetected = true;                       // sentinel -> triggers refund
+          refusalDetected = true;                       // out-of-context sentinel -> net charge 1
           textCarry = textCarry.split(refusal_key).join('');
+        }
+        if (textCarry.includes(followup_key)) {
+          followupDetected = true;                      // follow-up marker -> full refund (net charge 0)
+          textCarry = textCarry.split(followup_key).join('');
         }
         for (const term of scrub_terms) {               // phrase -> removed, no refund
           if (textCarry.includes(term)) textCarry = textCarry.split(term).join('');
         }
         let hold = 0;
-        const tokens = [refusal_key, ...scrub_terms];
+        const tokens = [refusal_key, followup_key, ...scrub_terms];
         const maxLen = Math.max(...tokens.map(t => t.length));
         const maxK = Math.min(textCarry.length, maxLen - 1);
         for (let k = maxK; k > 0; k--) {
@@ -1396,7 +1406,7 @@ if (!hasEnoughCredits) {
           // line), then any held-back real text (sentinel already removed) as a final delta.
           if (!res.writableEnded) {
             if (sseBuf) { res.write(Buffer.from(transformSseEvent(sseBuf), 'utf8')); sseBuf = ''; }
-            let leftover = textCarry.split(refusal_key).join('');
+            let leftover = textCarry.split(refusal_key).join('').split(followup_key).join('');
             for (const t of scrub_terms) leftover = leftover.split(t).join('');
             textCarry = '';
             if (leftover) writeSseEvent(res, 'response.text.delta', { text: leftover });
@@ -1406,17 +1416,25 @@ if (!hasEnoughCredits) {
             if (leftoverThinking) writeSseEvent(res, 'response.thinking.delta', { text: leftoverThinking });
           }
 
-          // If the sentinel was stripped, the agent refused — refund so the net charge is 1.
+          // Refund policy:
+          //   out-of-context sentinel (refusalDetected) -> net charge 1
+          //   follow-up marker (followupDetected)       -> full refund, net charge 0
+          // Precedence: if BOTH fired, out-of-context wins and 1 credit is subtracted.
           const refused = refusalDetected;
+          const fullRefund = followupDetected;
           let finalCreditsLeft = creditsLeft;
-          if (hasEnoughCredits && chargedCost > 1 && refused) {
-            const refund = chargedCost - 1; // category cost consumed, minus 1
-            const endUserId = process.env.USER_ID || 'unknown_user';
-            const newBal = refundCredits(endUserId, refund);
-            if (newBal != null) {
-              finalCreditsLeft = newBal;
-              console.log(`\u21a9\ufe0f  Refusal sentinel stripped \u2014 refunded ${refund}, net charge 1, credits left: ${newBal}`);
-              if (!res.writableEnded) writeSseEvent(res, 'response.credits_adjusted', { creditsLeft: newBal });
+          if (hasEnoughCredits && (refused || fullRefund)) {
+            const netCharge = refused ? 1 : 0;          // out-of-context precedence
+            const refund = chargedCost - netCharge;     // give back everything above the net charge
+            if (refund > 0) {
+              const reason = refused ? 'out-of-context sentinel' : 'follow-up marker';
+              const endUserId = process.env.USER_ID || 'unknown_user';
+              const newBal = refundCredits(endUserId, refund);
+              if (newBal != null) {
+                finalCreditsLeft = newBal;
+                console.log(`\u21a9\ufe0f  ${reason} stripped \u2014 refunded ${refund}, net charge ${netCharge}, credits left: ${newBal}`);
+                if (!res.writableEnded) writeSseEvent(res, 'response.credits_adjusted', { creditsLeft: newBal });
+              }
             }
           }
 
