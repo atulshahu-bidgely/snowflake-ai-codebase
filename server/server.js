@@ -19,7 +19,7 @@
  * - LangSmith latency reflects only the actual agent response time (not the polling wait).
  */
 const refusal_key="hdhkashqhdkjasdhaskhddkjas";
-const scrub_terms = ["nothing else, then pass the marker","nothing else, then pass the out-of-scope marker.", "(Consumption > 0 users only shown)"];   // removed from answer AND thinking text; NO refund
+const scrub_terms = ["nothing else, then pass the marker","nothing else, then pass the out-of-scope marker.", "(Consumption > 0 users only shown)", ", then append the marker."];   // removed from answer AND thinking text; NO refund
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
