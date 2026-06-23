@@ -43,7 +43,6 @@ export interface ChatMessage {
   thinkingTexts?: string[];
   sqlQueries?: SqlQueryWithVerification[];
   charts?: any[]; // Using any[] for now, can be refined based on chart types
-  serverTable?: { headers: string[]; rows: string[][] } | null; // table rebuilt from response.table / final response event
   annotations?: TextAnnotation[]; // Metadata about the response text (citations, sources, etc.)
   timeline?: Array<{
     type: 'status' | 'thinking' | 'tool' | 'sql' | 'chart' | 'annotation';
