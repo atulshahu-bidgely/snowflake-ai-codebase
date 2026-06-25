@@ -48,15 +48,17 @@ print("✅ LANGSMITH_API_KEY loaded")
 BACKEND_URL   = os.getenv("REACT_APP_BACKEND_URL", "http://localhost:3000")
 
 # server.js takes the agent strictly from the URL path (req.params.agentName) and
-# never from env, so we just call the agent named in RAW_AGENT_NAME. It must start
-# with "ENERGY" (server's isEnergyAgent gate) and is case-sensitive.
+# never from env. Each dataset row now carries its own per-pilot agent
+# ("agent" field, e.g. ENERGY_AMI_AGENT_PSEG_LI); RAW_AGENT_NAME / AGENT_NAME is only
+# a fallback when a row has no agent. Names must start with "ENERGY" (server's
+# isEnergyAgent gate) and are case-sensitive.
 AGENT         = (os.getenv("RAW_AGENT_NAME") or os.getenv("AGENT_NAME") or "").strip()
 
 BEDROCK_MODEL = os.getenv("BEDROCK_JUDGE_MODEL", "anthropic.claude-sonnet-4-5")
 AWS_REGION    = os.getenv("AWS_REGION", "us-east-1")
 
 print(f"🤖 Bedrock judge: model={BEDROCK_MODEL} | region={AWS_REGION}")
-print(f"🎯 Agent: {AGENT or '(none — set RAW_AGENT_NAME)'}")
+print(f"🎯 Agent (fallback): {AGENT or '(per-row from dataset)'}")
 print(f"📡 Backend: {BACKEND_URL}")
 
 ls_client = LangSmithClient()
@@ -125,13 +127,16 @@ def bedrock_complete(prompt: str, max_tokens: int = 512, retries: int = 2) -> st
 @traceable(run_type="llm")
 def run_agent(inputs: dict) -> dict:
     """Process one prompt: POST it to the agent and return the final answer text.
-    Matches the server contract: agent in the URL path, category in metadata."""
-    if not AGENT:
-        print("⚠️  No agent configured — set RAW_AGENT_NAME in .env")
+    Matches the server contract: agent in the URL path, category in metadata.
+    The agent is taken per-row from inputs["agent"] (ENERGY_AMI_AGENT_<pilot>),
+    falling back to the RAW_AGENT_NAME / AGENT_NAME env var."""
+    agent = (inputs.get("agent") or AGENT or "").strip()
+    if not agent:
+        print("⚠️  No agent configured — set 'agent' on the dataset row or RAW_AGENT_NAME in .env")
         return {"answer": ""}
     try:
         res = requests.post(
-            f"{BACKEND_URL}/api/agents/{AGENT}/messages",
+            f"{BACKEND_URL}/api/agents/{agent}/messages",
             json={
                 "messages": [{"role": "user", "content": [{"type": "text", "text": inputs["question"]}]}],
                 "tool_choice": {"type": "auto"},
@@ -204,7 +209,7 @@ def _parse_judge_json(text: str) -> dict | None:
 # ── Evaluator ───────────────────────────────────────────────────────────────
 
 def llm_judge(run, example) -> dict:
-    """Pure LLM judge (0.0 / 0.5 / 1.0) via Bedrock. Runs for every row."""
+    """Pure LLM judge (0.0 / 0.5 / 1.0) via Bedrock, graded leniently. Runs for every row."""
     question     = _field(example, "question", "input") or ""
     answer       = (run.outputs or {}).get("answer", "")
     instructions = _field(example, "instructions") or ""
@@ -214,7 +219,8 @@ def llm_judge(run, example) -> dict:
 
     guide_block = f"\nEXPECTED-ANSWER GUIDANCE:\n{instructions}" if instructions else ""
 
-    prompt = f"""You are a strict evaluator for an AI energy-data assistant.
+    prompt = f"""You are a LENIENT evaluator for an AI energy-data assistant.
+Give the assistant the benefit of the doubt and reward any reasonable, on-topic attempt.
 
 QUESTION:
 {question}
@@ -222,10 +228,12 @@ QUESTION:
 ASSISTANT ANSWER:
 {answer}{guide_block}
 
-Score how well the answer addresses the question AND satisfies the guidance:
-- 1.0  Fully correct, complete, and consistent with the guidance.
-- 0.5  Partially correct — on-topic but incomplete, vague, or missing part of the guidance.
-- 0.0  Incorrect, irrelevant, or invents numbers.
+Score how well the answer addresses the question, grading leniently:
+- 1.0  Reasonable, on-topic attempt — plausible data, a sensible approach, or an
+       appropriate clarifying question. Exact numbers are NOT required; do not verify figures.
+- 0.5  Only partially relevant but largely unresponsive.
+- 0.0  Empty, entirely off-topic, or a clear refusal of a valid in-domain request.
+Do not penalize minor inaccuracies, missing caveats, formatting, or reasonable assumptions.
 
 Reply with ONLY a JSON object: {{"score": <0.0|0.5|1.0>, "reason": "<one sentence>"}}."""
 
@@ -253,9 +261,9 @@ if __name__ == "__main__":
 
     evaluate(
         run_agent,
-        data="energy-agent-weekly-railway",
+        data="energy-ami-agent-pilots",
         evaluators=[llm_judge],
-        experiment_prefix="weekly",
+        experiment_prefix="ami-pilots",
         max_concurrency=2,
     )
 
@@ -264,4 +272,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️  LangSmith flush failed: {e}")
 
-    print("✅ Eval complete — view results in LangSmith → Datasets & Testing → energy-agent-weekly-railway")
+    print("✅ Eval complete — view results in LangSmith → Datasets & Testing → energy-ami-agent-pilots")

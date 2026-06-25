@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-DATASET_NAME = "energy-agent-weekly-railway"
+# Fresh dataset for the per-pilot ENERGY_AMI_AGENT_* experiment.
+DATASET_NAME = "energy-ami-agent-pilots"
 client       = Client()
 
 # Get or create dataset
@@ -27,8 +28,13 @@ with open("Golden_questions.csv") as f:
     examples = list(csv.DictReader(f))
 
 client.create_examples(
-    inputs =[{"question": e["input"], "category": e.get("category", "")} for e in examples],
-    outputs=[{"instructions": e.get("instructions", "")}                 for e in examples],
+    inputs =[{
+        "question": e["input"],
+        "category": e.get("category", ""),
+        "pilot":    e.get("pilot", ""),
+        "agent":    e.get("agent", ""),
+    } for e in examples],
+    outputs=[{"instructions": e.get("instructions", "")} for e in examples],
     dataset_id=dataset.id,
 )
 print(f"✅ Dataset '{DATASET_NAME}' updated with {len(examples)} examples")

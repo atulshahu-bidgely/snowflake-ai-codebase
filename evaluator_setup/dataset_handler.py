@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 client = Client()
 
-DATASET_NAME = "energy-agent-weekly-railway"
+# Fresh dataset for the per-pilot ENERGY_AMI_AGENT_* experiment
+# (replaces the old "energy-agent-weekly-railway" demo dataset).
+DATASET_NAME = "energy-ami-agent-pilots"
 
 print("Connecting to LangSmith...")
 existing = [d for d in client.list_datasets() if d.name == DATASET_NAME]
@@ -21,9 +23,16 @@ with open("Golden_questions.csv") as f:
 
 print(f"Loaded {len(examples)} rows from CSV")
 
+# pilot + agent travel in the inputs so the evaluator can route each row to its
+# own ENERGY_AMI_AGENT_<pilot> agent.
 client.create_examples(
-    inputs =[{"question": e["input"], "category": e.get("category", "")} for e in examples],
-    outputs=[{"instructions": e.get("instructions", "")}                 for e in examples],
+    inputs =[{
+        "question": e["input"],
+        "category": e.get("category", ""),
+        "pilot":    e.get("pilot", ""),
+        "agent":    e.get("agent", ""),
+    } for e in examples],
+    outputs=[{"instructions": e.get("instructions", "")} for e in examples],
     dataset_id=dataset.id,
 )
 print(f"✅ Created dataset with {len(examples)} examples")
