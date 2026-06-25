@@ -264,7 +264,7 @@ if __name__ == "__main__":
         data="energy-ami-agent-pilots",
         evaluators=[llm_judge],
         experiment_prefix="ami-pilots",
-        max_concurrency=2,
+        max_concurrency=160,
     )
 
     try:
