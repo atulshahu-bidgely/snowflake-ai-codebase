@@ -79,37 +79,16 @@ _last_bedrock_error: str | None = None
 
 
 def get_bedrock_client():
-    """Bedrock runtime client using EVAL_* creds. STS AssumeRole only when ARN_KEY
-    is a real IAM role ARN (contains ':role/')."""
-    access_key = os.getenv("EVAL_ACCESS_API_KEY")
-    secret_key = os.getenv("EVAL_SECRET_API_KEY")
-    arn        = os.getenv("ARN_KEY")
-    ext_id     = os.getenv("ID_KEY")
+    """Bedrock runtime client using a single unified Bedrock API key
+    (EVAL_BEDROCK_API_KEY), read by boto3 from AWS_BEARER_TOKEN_BEDROCK."""
+    api_key = os.getenv("EVAL_BEDROCK_API_KEY")
+    if not api_key:
+        raise EnvironmentError("❌ EVAL_BEDROCK_API_KEY not found — check your .env file(s)")
 
-    base_kwargs = dict(
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=AWS_REGION,
-    )
+    # boto3 picks up the Bedrock API key from this env var automatically.
+    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = api_key
 
-    if arn and ":role/" not in arn:
-        arn = None
-
-    if arn:
-        sts = boto3.client("sts", **base_kwargs)
-        assume_kwargs: dict = {"RoleArn": arn, "RoleSessionName": "eval-session"}
-        if ext_id:
-            assume_kwargs["ExternalId"] = ext_id
-        creds = sts.assume_role(**assume_kwargs)["Credentials"]
-        return boto3.client(
-            "bedrock-runtime",
-            region_name=AWS_REGION,
-            aws_access_key_id=creds["AccessKeyId"],
-            aws_secret_access_key=creds["SecretAccessKey"],
-            aws_session_token=creds["SessionToken"],
-        )
-
-    return boto3.client("bedrock-runtime", **base_kwargs)
+    return boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
 
 def bedrock_complete(prompt: str, max_tokens: int = 512, retries: int = 2) -> str | None:
