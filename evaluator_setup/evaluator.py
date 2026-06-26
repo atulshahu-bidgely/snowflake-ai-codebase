@@ -47,6 +47,16 @@ print("✅ LANGSMITH_API_KEY loaded")
 
 BACKEND_URL   = os.getenv("REACT_APP_BACKEND_URL", "http://localhost:3000")
 
+# Agent calls (Cortex SQL gen + exec + summarize) can run for minutes. Split the
+# connect vs read timeout and make both env-tunable so slow rows don't die at 120s.
+AGENT_CONNECT_TIMEOUT = float(os.getenv("AGENT_CONNECT_TIMEOUT", "10"))
+AGENT_READ_TIMEOUT    = float(os.getenv("AGENT_READ_TIMEOUT", "600"))
+AGENT_RETRIES         = int(os.getenv("AGENT_RETRIES", "2"))
+# How many examples to process in parallel. Keep in step with the server rate
+# limit (RATE_LIMIT_MAX_REQUESTS) — express-rate-limit caps TOTAL requests per
+# window per IP, not concurrency, so finishing faster packs more into one window.
+EVAL_MAX_CONCURRENCY  = int(os.getenv("EVAL_MAX_CONCURRENCY", "8"))
+
 # server.js takes the agent strictly from the URL path (req.params.agentName) and
 # never from env. Each dataset row now carries its own per-pilot agent
 # ("agent" field, e.g. ENERGY_AMI_AGENT_PSEG_LI); RAW_AGENT_NAME / AGENT_NAME is only
@@ -60,6 +70,8 @@ AWS_REGION    = os.getenv("AWS_REGION", "us-east-1")
 print(f"🤖 Bedrock judge: model={BEDROCK_MODEL} | region={AWS_REGION}")
 print(f"🎯 Agent (fallback): {AGENT or '(per-row from dataset)'}")
 print(f"📡 Backend: {BACKEND_URL}")
+print(f"⏱️  Agent timeout: connect={AGENT_CONNECT_TIMEOUT}s read={AGENT_READ_TIMEOUT}s | retries={AGENT_RETRIES}")
+print(f"🧵 Max concurrency: {EVAL_MAX_CONCURRENCY}")
 
 ls_client = LangSmithClient()
 
@@ -134,38 +146,58 @@ def run_agent(inputs: dict) -> dict:
     if not agent:
         print("⚠️  No agent configured — set 'agent' on the dataset row or RAW_AGENT_NAME in .env")
         return {"answer": ""}
-    try:
-        res = requests.post(
-            f"{BACKEND_URL}/api/agents/{agent}/messages",
-            json={
-                "messages": [{"role": "user", "content": [{"type": "text", "text": inputs["question"]}]}],
-                "tool_choice": {"type": "auto"},
-                "stream": True,
-                "metadata": {"category": inputs.get("category")},
-            },
-            stream=True,
-            timeout=120,
-        )
-        res.raise_for_status()
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": inputs["question"]}]}],
+        "tool_choice": {"type": "auto"},
+        "stream": True,
+        "metadata": {"category": inputs.get("category")},
+    }
 
-        answer_text   = ""
-        current_event = ""
-        for line in res.iter_lines(decode_unicode=True):
-            if line.startswith("event:"):
-                current_event = line[6:].strip()
-            elif line.startswith("data:"):
-                raw = line[5:].strip()
-                try:
-                    data = json.loads(raw)
-                    if current_event == "response.text.delta":
-                        answer_text += data.get("text", "")
-                except Exception:
-                    pass
+    last_err = None
+    for attempt in range(AGENT_RETRIES + 1):
+        try:
+            res = requests.post(
+                f"{BACKEND_URL}/api/agents/{agent}/messages",
+                json=payload,
+                stream=True,
+                timeout=(AGENT_CONNECT_TIMEOUT, AGENT_READ_TIMEOUT),
+            )
+            # Retry transient server states (rate limit / 5xx) rather than scoring the row 0.
+            if res.status_code == 429 or res.status_code >= 500:
+                res.close()
+                raise requests.HTTPError(f"{res.status_code} {res.reason}")
+            res.raise_for_status()
 
-        return {"answer": answer_text.strip()}
-    except Exception as e:
-        print(f"⚠️  Agent call failed: {e}")
-        return {"answer": ""}
+            answer_text   = ""
+            current_event = ""
+            for line in res.iter_lines(decode_unicode=True):
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
+                elif line.startswith("data:"):
+                    raw = line[5:].strip()
+                    try:
+                        data = json.loads(raw)
+                        if current_event == "response.text.delta":
+                            answer_text += data.get("text", "")
+                    except Exception:
+                        pass
+
+            return {"answer": answer_text.strip()}
+
+        except (requests.Timeout, requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError, requests.HTTPError) as e:
+            last_err = e
+            if attempt < AGENT_RETRIES:
+                wait = 3 * (attempt + 1)
+                print(f"⏳ {agent}: transient error ({e}); retry {attempt + 1}/{AGENT_RETRIES} in {wait}s")
+                time.sleep(wait)
+                continue
+        except Exception as e:
+            last_err = e
+            break
+
+    print(f"⚠️  Agent call failed for {agent} after {AGENT_RETRIES + 1} attempt(s): {last_err}")
+    return {"answer": ""}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -264,7 +296,7 @@ if __name__ == "__main__":
         data="energy-ami-agent-pilots",
         evaluators=[llm_judge],
         experiment_prefix="ami-pilots",
-        max_concurrency=160,
+        max_concurrency=EVAL_MAX_CONCURRENCY,
     )
 
     try:
