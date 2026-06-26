@@ -531,6 +531,29 @@ const extractThinkingFromSSE = (sseText) => {
   return cleaned.trim();
 };
 
+/** Everything else in the stream: every SSE event that is NOT answer-text or thinking
+ *  text (e.g. response.created, metadata, tool/agent events, usage, request_id, done).
+ *  Returned as an ordered array of { event, data } so the full remainder is preserved. */
+const extractMiscFromSSE = (sseText) => {
+  const misc = [];
+  iterateSseEvents(sseText, (evt, data) => {
+    if (!evt) return;
+    if (evt === 'response.text.delta') return; // -> final_answer
+    if (evt.includes('thinking')) return;      // -> thinking
+    let parsed = data;
+    if (data && data.startsWith('{')) { try { parsed = JSON.parse(data); } catch { /* keep raw */ } }
+    misc.push({ event: evt, data: parsed });
+  });
+  return misc;
+};
+
+/** Splits one raw SSE response into the three LangSmith output buckets. */
+const splitSseResponse = (sseText) => ({
+  final_answer: extractAnswerTextFromSSE(sseText), // the text printed on the console
+  thinking:     extractThinkingFromSSE(sseText),   // the chain-of-thought
+  misc:         extractMiscFromSSE(sseText),        // everything else in the stream
+});
+
 /** Pulls the latest user message text out of the request body. */
 const extractUserInput = (requestBody) => {
   const msgs = Array.isArray(requestBody && requestBody.messages) ? requestBody.messages : [];
@@ -751,7 +774,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
     const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
     if (langsmith && runId) {
       langsmith.updateRun(runId, {
-        outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
+        outputs: { ...output, ...(usage_metadata && { usage_metadata }) },
         end_time: streamEndTime,
         extra: { metadata: { status, latencyMs, streamed: true } },
       }).catch(err => console.warn('⚠️ LangSmith updateRun failed:', err.message));
@@ -774,7 +797,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
       if (credits) {
         const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens, costUSD: credits.costUSD });
         if (langsmith && runId) await langsmith.updateRun(runId, {
-          outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
+          outputs: { ...output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime, // actual stream end, not now
           extra: {
             metadata: {
@@ -801,7 +824,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
         console.warn(`⚠️ No credit data after +${elapsed}s, closing run without credits`);
         const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
         if (langsmith && runId) await langsmith.updateRun(runId, {
-          outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
+          outputs: { ...output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime,
           extra: { metadata: { status, latencyMs, streamed: true, output_size_mb: expectedSize } },
         });
@@ -1439,7 +1462,7 @@ if (!hasEnoughCredits) {
           }
 
           closeRunWithCredits(langsmithRunId, {
-            output: fullStreamText,
+            output: splitSseResponse(fullStreamText),
             status: statusCode,
             latencyMs: Date.now() - startTime,
             streamEndTime: new Date().toISOString(),
@@ -1487,7 +1510,7 @@ if (!hasEnoughCredits) {
             const finalRequestId = extractRequestIdFromSSE(fullStreamText) || snowflakeRequestId || null;
             const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
             closeRunWithCredits(langsmithRunId, {
-              output: fullStreamText, status: 499,
+              output: splitSseResponse(fullStreamText), status: 499,
               latencyMs: Date.now() - startTime,
               streamEndTime: new Date().toISOString(),
               requestId: finalRequestId,
@@ -1545,7 +1568,7 @@ if (!hasEnoughCredits) {
         const finalRequestId = extractRequestIdFromSSE(fullStreamText) || snowflakeRequestId || null;
         const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
         closeRunWithCredits(langsmithRunId, {
-          output: fullStreamText,
+          output: splitSseResponse(fullStreamText),
           status: 499, // 499 = Client Closed Request (nginx convention)
           latencyMs: Date.now() - startTime,
           streamEndTime: new Date().toISOString(),
