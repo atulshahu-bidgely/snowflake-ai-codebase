@@ -1,0 +1,2 @@
+"input","category","instructions","pilot","agent"
+"how many EV customers do we have","Accuracy","Grading for the TEST pilot (agent ENERGY_AMI_AGENT_TEST). Judge factual/data correctness against the expected result. Score 1.0 if: the response returns a single, correctly-computed count of EV customers, clearly labeled. Score 0.5 if: the response returns EV-related data that is partially correct or an approximation. Score 0.0 if: the response is empty, returns an incorrect figure, or returns non-EV data.","TEST","ENERGY_AMI_AGENT_TEST"

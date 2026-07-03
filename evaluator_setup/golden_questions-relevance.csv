@@ -1,0 +1,2 @@
+"input","category","instructions","pilot","agent"
+"what can this energy assistant help me with","Relevance","Grading for the TEST pilot (agent ENERGY_AMI_AGENT_TEST). Judge how on-topic and responsive the answer is (not factual accuracy). Score 1.0 if: the response directly addresses the question and stays on-topic for an energy-data assistant. Score 0.5 if: the response is only partially relevant or largely unresponsive. Score 0.0 if: the response is empty, off-topic, or a refusal of a valid in-domain request.","TEST","ENERGY_AMI_AGENT_TEST"
