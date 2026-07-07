@@ -16,11 +16,18 @@ from dotenv import load_dotenv, find_dotenv
 # Each metric has its own golden-questions CSV and its own LangSmith dataset.
 # ══════════════════════════════════════════════════════════════════════════════
 METRICS_TO_RUN = {
-    "guardrail": True,
-    "accuracy":  True,
+    "guardrail": False,
+    "accuracy":  False,
     "relevance": True,
-    "language":  True,
+    "language":  False,
 }
+N=1 #number of repetitions per example. Set >1 to get a distribution of scores for stochastic agents.
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG END— flip metrics on/off here. Only the metrics set to True are run.
+# Each metric has its own golden-questions CSV and its own LangSmith dataset.
+# ══════════════════════════════════════════════════════════════════════════════
 
 # When True, each enabled metric's CSV is (re)uploaded to its dataset before the
 # eval runs — the dataset is cleared and repopulated from the CSV. Set False to
@@ -438,6 +445,7 @@ if __name__ == "__main__":
             evaluators=[make_judge(metric, cfg["rubric"])],
             experiment_prefix=cfg["prefix"],
             max_concurrency=EVAL_MAX_CONCURRENCY,
+            num_repetitions=N,
         )
         print(f"✅ {metric} eval complete → LangSmith dataset '{cfg['dataset']}'\n")
 
