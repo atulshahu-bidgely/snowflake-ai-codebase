@@ -1,2 +1,1 @@
-"input","category","instructions","pilot","agent"
-"target users with inefficient cooling for a weatherization program","Target Programs","Grading for the TEST pilot (agent ENERGY_AMI_AGENT_TEST). Judge language quality only — clarity, grammar, tone, and formatting — not factual accuracy. Score 1.0 if: the response is clear, grammatically well-formed, and uses an appropriate professional tone. Score 0.5 if: the response is understandable but awkward or contains noticeable grammar/formatting issues. Score 0.0 if: the response is incoherent, empty, or in the wrong language.","TEST","ENERGY_AMI_AGENT_TEST"
+input,category,instructions,pilot,agent
