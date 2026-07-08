@@ -136,33 +136,99 @@ const buildPrompt = (text: string, isAnalysis: boolean, isTarget: boolean = fals
   const resultLimitText = resultLimit.explicit
     ? `The user explicitly requested top ${resultLimit.limit} results, so return top ${resultLimit.limit}.`
     : `The user did not explicitly request a result count, so default to top ${DEFAULT_RESULT_LIMIT}.`;
-  if (isTarget) {
-    return `${text}\n\nIMPORTANT: This is a program targeting or top-N question. Provide a detailed but focused summary, then return ranked result rows.
-Result limit rule:
-- Default to top ${DEFAULT_RESULT_LIMIT} rows.
-- ${resultLimitText}
-- Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh", or "30 days" are data values. They should not change the row limit.
-Return only:
-1. A detailed summary with the key trends, drivers, risks, and notable patterns.
-2. One chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points by the most relevant metric.
-	3. One markdown table with exactly the top ${resultLimit.limit} matching records when available.
-	   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes, metric values, categories, scores, counts, utilization, or capacity.
-	   - Preserve UUIDs, customer IDs, account IDs, meter IDs, premise IDs, and asset IDs exactly as returned. Do not shorten, mask, abbreviate, or replace any identifier with ellipses.
-	   - Do NOT describe columns; return actual data rows only.
-	   - Choose the most relevant columns dynamically based on the question.
-	Do not include internal reasoning, query-planning narration, sources, or CSV download text.
-   (if solar users are queried , consumption of solar users MAY BE NEGATIVE)`;
+  if (isTarget || isAnalysis) {
+    return `${text}\n\nIMPORTANT: Category TRENDS_TARGETING means detailed analysis with user-level CSV download
+                capability. The generated SQL/export dataset and CSV download should be user-level whenever
+                the question is about targeting, outreach, ranking, eligibility, inefficient users, accounts,
+                meters, premises, or customers.
+                The CSV/download dataset must contain the complete user-level result set for the requested
+                filters and scope. Do not cap the CSV/download dataset to the visible UI preview limit.
+                Provide a detailed but focused summary, then return a limited preview of ranked user-level
+                result rows.
+                Result limit rule:
+                - Default the visible chart and structured table preview to top %d rows.
+                - %s
+                - Never generate a CSV/download dataset with more than %,d rows. If the user asks for more,
+                  cap the CSV/download SQL/export dataset at %,d rows.
+                - If the user did not explicitly request a result count, do not add the default top %d limit to
+                  the user-level SQL/export dataset or CSV download; use the limit only for visible UI preview rows.
+                  The default CSV/download result should include all matching users, subject only to the maximum
+                  download cap.
+                - If the user explicitly requested a result count, apply that count to the CSV/download dataset,
+                  then still show only up to %d rows in the visible chart and table preview.
+                  Example: if the user asks for top 10, the CSV/download dataset should contain top 10 matching
+                  records. If the user does not ask for a count, the CSV/download dataset should contain all
+                  matching records up to the maximum download cap.
+                - If the user explicitly asks for a total count, return the count in the answer. Do not create
+                  an additional CSV for the total count unless the user specifically asks to download it.
+                - Always create exactly one CSV/download dataset for this target-program answer, using the
+                  complete user-level SQL/export result set for the requested filters and scope. Do not create
+                  duplicate CSV/download datasets.
+                - Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh",
+                  or "30 days" are data values. They should not change the row limit.
+                %s
+                Return only:
+                1. A detailed summary with the key trends, drivers, risks, and notable patterns.
+                2. One chart or visualization whenever the query returns concrete rows. Use up to top %d
+                   data points by the most relevant metric. Do not emit an empty chart.
+                3. One structured table whenever the query returns concrete rows. Use up to top %d matching
+                   records. Do not emit an empty table.
+                   - For total, trend, or aggregate questions, return the aggregate result rows used for the
+                     chart, such as period, region, segment, count, usage, or other metric columns.
+                   - For targeting, ranking, eligibility, or outreach questions, return ranked user-level rows.
+                   - Every row must contain real result values such as asset/customer IDs, names, ZIP codes,
+                     metric values, categories, scores, counts, utilization, or capacity.
+                   - Preserve UUIDs, customer IDs, account IDs, meter IDs, premise IDs, and asset IDs exactly
+                     as returned. Do not shorten, mask, abbreviate, or replace identifiers with ellipses.
+                   - Do not describe columns; return actual data rows only.
+                   - Choose the most relevant columns dynamically based on the question.
+                   - Do not include a markdown table in the text response.
+                Do not include internal reasoning, query-planning narration, sources, or CSV download text.
+                If applicable, only consider users with a consumption > 0; for solar users, include them regardless of sign and display the absolute value of their
+                consumption (e.g., -10 kWh displays as 10 kWh), unless explicitly stated otherwise above. Do not include boilerplate notes about consumption filters, periods, filters used,
+                candidate counts, or follow-up suggestions/questions.`;
   }
-  if (isAnalysis) {
-    return `${text}\n\nIMPORTANT: This is a consumption analysis or trend question. Provide a detailed but focused summary with trends, breakdowns, drivers, and notable patterns.
-Result limit rule:
-- Default ranked outputs to top ${DEFAULT_RESULT_LIMIT} rows.
-- ${resultLimitText}
-- Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh", or "30 days" are data values. They should not change the row limit.
-Include a chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points when the result is a ranked/top-N output. Do not emit an empty chart or an empty table. Do not include internal reasoning, sources, or CSV download text.
- (if solar users are queried , consumption of solar users MAY BE NEGATIVE)`;
-  }
-  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal. (if solar users are queried , consumption of solar users MAY BE NEGATIVE)`;
+
+  return `${text}\n\nIMPORTANT: Category SNAPSHOT means high-level regional analysis with regional data CSV
+                downloads. Aggregate results to regional or geographic dimensions such as region, territory,
+                district, city, ZIP/postal code, feeder area, service area, or another available regional field.
+                Do not create user-level, account-level, meter-level, or premise-level CSV rows for this category
+                unless the user explicitly asks for user-level records.
+                The CSV/download dataset must contain the complete regional result set for the requested filters
+                and scope. Do not cap the CSV/download dataset to the visible UI preview limit.
+                Provide a detailed but focused high-level summary with regional trends, regional breakdowns,
+                drivers, and notable patterns.
+                Result limit rule:
+                - Default the visible chart and table preview to top %d regional rows.
+                - %s
+                - Never generate a CSV/download dataset with more than %,d rows. If the user asks for more,
+                  cap the CSV/download SQL/export dataset at %,d rows.
+                - If the user did not explicitly request a result count, do not add the default top %d limit to
+                  the regional SQL/export dataset or CSV download; use the limit only for visible UI preview rows.
+                  The default CSV/download result should include all matching regional rows, subject only to the
+                  maximum download cap.
+                - If the user explicitly requested a result count, apply that count to the regional CSV/download
+                  dataset. Example: if the user asks for top 10, the CSV/download dataset should contain top 10
+                  regional rows. If the user does not ask for a count, the CSV/download dataset should contain all
+                  matching regional rows up to the maximum download cap.
+                - Do not render more than %d rows or data points in any visible chart or table, even when
+                  the user asks for a larger result count such as top 1000 or find 1000. Summarize the larger result set
+                  in text instead.
+                - Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh",
+                  or "30 days" are data values. They should not change the row limit.
+                - Always create exactly one CSV/download dataset for this category, using the same regional
+                  SQL/export result set for the requested filters and scope. Do not create duplicate CSV/download
+                  datasets.
+                %s
+                Include one chart or visualization whenever the query returns concrete rows, using up to top
+                %d data points. Include one structured table whenever the query returns concrete rows, using
+                up to top %d rows. Do not emit an empty chart or an empty table. Do not
+                include internal reasoning, sources, CSV download text, boilerplate notes about consumption
+                filters, periods, filters used, candidate counts, or follow-up suggestions/questions. If applicable, 
+                only consider users with a consumption > 0;
+                for solar users, include them regardless of sign and display the absolute value of their
+                consumption (e.g., -10 kWh displays as 10 kWh), unless explicitly stated otherwise above.
+                """.formatted(`;
 };
 
 export const EnergyAssistantPopup: React.FC = () => {
