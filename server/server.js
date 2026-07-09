@@ -546,12 +546,35 @@ const extractMiscFromSSE = (sseText) => {
   });
   return misc;
 };
-
+const extractSqlFromSSE = (sseText) => {
+  const out = [];
+  const seen = new Set();
+  const addSql = (sql, queryId) => {
+    if (typeof sql !== 'string') return;
+    const clean = sql.trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    out.push({ sql: clean, query_id: queryId || null });
+  };
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (typeof node.sql === 'string') addSql(node.sql, node.query_id);
+    for (const k of Object.keys(node)) walk(node[k]);
+  };
+  iterateSseEvents(sseText, (evt, data) => {
+    if (!evt || !data || !data.startsWith('{')) return;
+    if (evt === 'response.text.delta' || evt.includes('thinking')) return;
+    try { walk(JSON.parse(data)); } catch { /* skip */ }
+  });
+  return out;
+};
 /** Splits one raw SSE response into the three LangSmith output buckets. */
 const splitSseResponse = (sseText) => ({
   final_answer: extractAnswerTextFromSSE(sseText), // the text printed on the console
   thinking:     extractThinkingFromSSE(sseText),   // the chain-of-thought
-  misc:         extractMiscFromSSE(sseText),        // everything else in the stream
+  SQL:          extractSqlFromSSE(sseText),        // sql
+  misc:         extractMiscFromSSE(sseText),       //everything else
 });
 
 /** Pulls the latest user message text out of the request body. */
@@ -1479,6 +1502,7 @@ if (!hasEnoughCredits) {
               input: extractUserInput(requestBody),
               output: extractAnswerTextFromSSE(fullStreamText),
               thinking: extractThinkingFromSSE(fullStreamText),
+              executed_sql: extractSqlFromSSE(fullStreamText),
               creditsUsed: chargedCost,
               tsIso: new Date(startTime).toISOString(),
               metadata: { source: 'stream_end', refused, snowflake_request_id: finalRequestId },
@@ -1525,6 +1549,7 @@ if (!hasEnoughCredits) {
                 input: extractUserInput(requestBody),
                 output: extractAnswerTextFromSSE(fullStreamText),
                 thinking: extractThinkingFromSSE(fullStreamText),
+                executed_sql: extractSqlFromSSE(fullStreamText),
                 creditsUsed: chargedCost,
                 tsIso: new Date(startTime).toISOString(),
                 metadata: { source: 'client_abort_error', snowflake_request_id: finalRequestId },
@@ -1584,6 +1609,7 @@ if (!hasEnoughCredits) {
             input: extractUserInput(requestBody),
             output: extractAnswerTextFromSSE(fullStreamText),
             thinking: extractThinkingFromSSE(fullStreamText),
+            executed_sql: extractSqlFromSSE(fullStreamText),
             creditsUsed: chargedCost,
             tsIso: new Date(startTime).toISOString(),
             metadata: { source: 'client_close', snowflake_request_id: finalRequestId },
