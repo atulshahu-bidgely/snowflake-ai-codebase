@@ -546,6 +546,11 @@ const extractMiscFromSSE = (sseText) => {
   });
   return misc;
 };
+
+/** Executed SQL pulled from system_execute_sql tool results in the stream.
+ *  Returns an ordered, de-duplicated array of { sql, query_id }. The compiled
+ *  statement Cortex actually ran lives at tool_result content[].json.sql; we
+ *  walk every non-text/non-thinking event and collect any `sql` string found. */
 const extractSqlFromSSE = (sseText) => {
   const out = [];
   const seen = new Set();
@@ -569,12 +574,36 @@ const extractSqlFromSSE = (sseText) => {
   });
   return out;
 };
+
+/** Splits the collected SQL into { intermediate, final }. The `final` query is the
+ *  statement actually executed against Snowflake — the one that carries a real
+ *  query_id (the compiled Cortex SQL). If several ran, the last executed one wins;
+ *  everything else (reference/verified queries + the agent's draft SQL) is intermediate. */
+const extractSqlBucketsFromSSE = (sseText) => {
+  const list = extractSqlFromSSE(sseText);
+  let finalIdx = -1;
+  for (let i = 0; i < list.length; i++) if (list[i].query_id) finalIdx = i;
+  if (finalIdx === -1) finalIdx = list.length - 1; // no query_id anywhere -> last item is final
+  return {
+    intermediate: list.filter((_, i) => i !== finalIdx),
+    final: finalIdx >= 0 ? list[finalIdx] : null,
+  };
+};
+
+/** The single final (executed) SQL statement as a clean one-line string.
+ *  Collapses newlines/tabs/repeated spaces so it stores tidily in a VARCHAR column. */
+const extractFinalSqlFromSSE = (sseText) => {
+  const f = extractSqlBucketsFromSSE(sseText).final;
+  if (!f || typeof f.sql !== 'string') return null;
+  return f.sql.replace(/\s+/g, ' ').trim();
+};
+
 /** Splits one raw SSE response into the three LangSmith output buckets. */
 const splitSseResponse = (sseText) => ({
   final_answer: extractAnswerTextFromSSE(sseText), // the text printed on the console
   thinking:     extractThinkingFromSSE(sseText),   // the chain-of-thought
-  SQL:          extractSqlFromSSE(sseText),        // sql
-  misc:         extractMiscFromSSE(sseText),       //everything else
+  SQL:          extractSqlBucketsFromSSE(sseText), // { intermediate: [...], final: {...} }
+  misc:         extractMiscFromSSE(sseText),        // everything else in the stream
 });
 
 /** Pulls the latest user message text out of the request body. */
@@ -610,13 +639,13 @@ const logCortexResponseToSnowflake = async (f = {}) => {
 
     const sql = `INSERT INTO ${CORTEX_LOG_TABLE}
   (TS, REQUEST_ID, RUN_ID, USER_ID, PILOT_NAME, CATEGORY, STATUS,
-   INPUT, THINKING, OUTPUT,
+   INPUT, THINKING, OUTPUT, SQL_QUERIES, FINAL_SQL_QUERY,
    INPUT_TOKENS, OUTPUT_TOKENS, TOTAL_TOKENS,
    LATENCY_MS, OUTPUT_STORAGE_SIZE_MB,
    CREDITS, COST_USD, CREDITS_USED, CREDITS_LEFT, METADATA)
 SELECT
   TO_TIMESTAMP_NTZ(?), ?, ?, ?, ?, ?, TRY_TO_NUMBER(?),
-  ?, ?, ?,
+  ?, ?, ?, PARSE_JSON(?), ?,
   TRY_TO_NUMBER(?), TRY_TO_NUMBER(?), TRY_TO_NUMBER(?),
   TRY_TO_NUMBER(?), TRY_TO_DOUBLE(?),
   TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), PARSE_JSON(?)`;
@@ -628,7 +657,7 @@ SELECT
     const vals = [
       f.tsIso || new Date().toISOString(),
       idOrSentinel(f.requestId), idOrSentinel(f.runId), idOrSentinel(f.userId), f.agentName, f.category, f.status,
-      f.input, f.thinking, f.output,
+      f.input, f.thinking, f.output, JSON.stringify(f.sqlQueries || []), f.finalSqlQuery || null,
       f.inputTokens, f.outputTokens, totalTokens,
       f.latencyMs, f.outputSizeMb,
       f.credits, f.costUSD, f.creditsUsed, f.creditsLeft,
@@ -1502,9 +1531,10 @@ if (!hasEnoughCredits) {
               input: extractUserInput(requestBody),
               output: extractAnswerTextFromSSE(fullStreamText),
               thinking: extractThinkingFromSSE(fullStreamText),
-              executed_sql: extractSqlFromSSE(fullStreamText),
               creditsUsed: chargedCost,
               tsIso: new Date(startTime).toISOString(),
+              sqlQueries: extractSqlBucketsFromSSE(fullStreamText),
+              finalSqlQuery: extractFinalSqlFromSSE(fullStreamText),
               metadata: { source: 'stream_end', refused, snowflake_request_id: finalRequestId },
             },
           });
@@ -1549,9 +1579,10 @@ if (!hasEnoughCredits) {
                 input: extractUserInput(requestBody),
                 output: extractAnswerTextFromSSE(fullStreamText),
                 thinking: extractThinkingFromSSE(fullStreamText),
-                executed_sql: extractSqlFromSSE(fullStreamText),
                 creditsUsed: chargedCost,
                 tsIso: new Date(startTime).toISOString(),
+                sqlQueries: extractSqlBucketsFromSSE(fullStreamText),
+                finalSqlQuery: extractFinalSqlFromSSE(fullStreamText),
                 metadata: { source: 'client_abort_error', snowflake_request_id: finalRequestId },
               },
             });
@@ -1609,9 +1640,10 @@ if (!hasEnoughCredits) {
             input: extractUserInput(requestBody),
             output: extractAnswerTextFromSSE(fullStreamText),
             thinking: extractThinkingFromSSE(fullStreamText),
-            executed_sql: extractSqlFromSSE(fullStreamText),
             creditsUsed: chargedCost,
             tsIso: new Date(startTime).toISOString(),
+            sqlQueries: extractSqlBucketsFromSSE(fullStreamText),
+            finalSqlQuery: extractFinalSqlFromSSE(fullStreamText),
             metadata: { source: 'client_close', snowflake_request_id: finalRequestId },
           },
         });
