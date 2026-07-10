@@ -1419,6 +1419,75 @@ if (!hasEnoughCredits) {
         return idx === -1 ? value : value.slice(0, idx);
       };
 
+      let tableLineCarry = '';
+      let tablePendingHeaderCells = null;
+      let tableActive = false;
+      let tableActiveAccountCols = [];
+
+      const SEPARATOR_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+      const splitTableCells = (line) => {
+        let l = line.trim();
+        if (l.startsWith('|')) l = l.slice(1);
+        if (l.endsWith('|')) l = l.slice(0, -1);
+        return l.split('|').map(c => c.trim());
+      };
+
+      const stripAccountCellSuffix = (cell) => {
+        const idx = cell.indexOf('-');
+        return idx === -1 ? cell : cell.slice(0, idx).trim();
+      };
+
+      const processTableLine = (line) => {
+        const hasPipe = line.includes('|') && line.trim().length > 0;
+
+        if (hasPipe && SEPARATOR_RE.test(line) && tablePendingHeaderCells) {
+          const headerCells = tablePendingHeaderCells;
+          tableActiveAccountCols = headerCells
+            .map((h, idx) => (ACCOUNT_HEADER_RE.test(h) ? idx : -1))
+            .filter(idx => idx !== -1);
+          tableActive = tableActiveAccountCols.length > 0;
+          tablePendingHeaderCells = null;
+          return line;
+        }
+
+        if (hasPipe && tableActive) {
+          const cells = splitTableCells(line);
+          for (const idx of tableActiveAccountCols) {
+            if (cells[idx] !== undefined) cells[idx] = stripAccountCellSuffix(cells[idx]);
+          }
+          tablePendingHeaderCells = cells;
+          return '| ' + cells.join(' | ') + ' |';
+        }
+
+        if (hasPipe) {
+          tablePendingHeaderCells = splitTableCells(line);
+          return line;
+        }
+
+        tablePendingHeaderCells = null;
+        tableActive = false;
+        tableActiveAccountCols = [];
+        return line;
+      };
+
+      const stripAccountSuffixesInMarkdownText = (incoming) => {
+        tableLineCarry += incoming;
+        const lastNewline = tableLineCarry.lastIndexOf('\n');
+        if (lastNewline === -1) return '';
+        const completeChunk = tableLineCarry.slice(0, lastNewline);
+        tableLineCarry = tableLineCarry.slice(lastNewline + 1);
+        const outLines = completeChunk.split('\n').map(processTableLine);
+        return outLines.join('\n') + '\n';
+      };
+
+      const flushAccountSuffixCarry = () => {
+        if (!tableLineCarry) return '';
+        const out = processTableLine(tableLineCarry);
+        tableLineCarry = '';
+        return out;
+      };
+
       // Strips account-suffix values inside a parsed vega-lite chart spec's data.values rows.
       const stripAccountSuffixesInChartSpec = (chartSpec) => {
         if (!chartSpec || !chartSpec.data || !Array.isArray(chartSpec.data.values)) return chartSpec;
@@ -1469,7 +1538,7 @@ if (!hasEnoughCredits) {
           try {
             const obj = JSON.parse(dataStr);
             if (typeof obj.text === 'string') {
-              obj.text = isText ? stripSentinelText(obj.text) : stripThinkingText(obj.text);
+              obj.text = isText ? stripAccountSuffixesInMarkdownText(stripSentinelText(obj.text)) : stripThinkingText(obj.text);
               lines[dataIdx] = 'data: ' + JSON.stringify(obj);
               return lines.join('\n');
             }
@@ -1575,6 +1644,7 @@ if (!hasEnoughCredits) {
             let leftover = textCarry.split(refusal_key).join('').split(followup_key).join('');
             for (const t of scrub_terms) leftover = leftover.split(t).join('');
             textCarry = '';
+            leftover += flushAccountSuffixCarry();
             if (leftover) writeSseEvent(res, 'response.text.delta', { text: leftover });
             let leftoverThinking = thinkingCarry;
             for (const t of scrub_terms) leftoverThinking = leftoverThinking.split(t).join('');
