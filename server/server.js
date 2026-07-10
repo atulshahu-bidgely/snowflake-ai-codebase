@@ -1406,6 +1406,50 @@ if (!hasEnoughCredits) {
         return out;
       };
 
+      // ── Account/acct column suffix strip ─────────────────────────────────
+      // For any table/chart column whose header/field name contains "account" or
+      // "acct" (case-insensitive), drop everything from the first "-" onward in
+      // the cell value, e.g. "129652155-0" -> "129652155". Applied directly on
+      // the structured chart/table payloads inside the SSE stream, before they
+      // reach the client.
+      const ACCOUNT_HEADER_RE = /account|acct/i;
+      const stripAccountValue = (value) => {
+        if (typeof value !== 'string') return value;
+        const idx = value.indexOf('-');
+        return idx === -1 ? value : value.slice(0, idx);
+      };
+
+      // Strips account-suffix values inside a parsed vega-lite chart spec's data.values rows.
+      const stripAccountSuffixesInChartSpec = (chartSpec) => {
+        if (!chartSpec || !chartSpec.data || !Array.isArray(chartSpec.data.values)) return chartSpec;
+        chartSpec.data.values = chartSpec.data.values.map(row => {
+          if (!row || typeof row !== 'object') return row;
+          const out = { ...row };
+          for (const key of Object.keys(out)) {
+            if (ACCOUNT_HEADER_RE.test(key)) out[key] = stripAccountValue(out[key]);
+          }
+          return out;
+        });
+        return chartSpec;
+      };
+
+      // Strips account-suffix values inside a Snowflake result_set (rowType headers + row arrays).
+      const stripAccountSuffixesInResultSet = (resultSet) => {
+        if (!resultSet || !resultSet.resultSetMetaData || !Array.isArray(resultSet.data)) return resultSet;
+        const rowType = resultSet.resultSetMetaData.rowType || [];
+        const accountColIdxs = rowType
+          .map((col, idx) => (col && ACCOUNT_HEADER_RE.test(col.name || '') ? idx : -1))
+          .filter(idx => idx !== -1);
+        if (accountColIdxs.length === 0) return resultSet;
+        resultSet.data = resultSet.data.map(row => {
+          if (!Array.isArray(row)) return row;
+          const out = [...row];
+          for (const idx of accountColIdxs) out[idx] = stripAccountValue(out[idx]);
+          return out;
+        });
+        return resultSet;
+      };
+
       // Rewrites one SSE event: cleans the sentinel out of response.text.delta payloads,
       // passes everything else through untouched.
       const transformSseEvent = (rawEvent) => {
@@ -1417,6 +1461,10 @@ if (!hasEnoughCredits) {
         }
         const isText = evt === 'response.text.delta';
         const isThinking = evt && evt.includes('thinking');
+        const isChart = evt === 'response.chart';
+        const isTable = evt === 'response.table';
+        const isFinalResponse = evt === 'response';
+
         if ((isText || isThinking) && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
           try {
             const obj = JSON.parse(dataStr);
@@ -1427,6 +1475,49 @@ if (!hasEnoughCredits) {
             }
           } catch { /* fall through — emit unchanged */ }
         }
+
+        if (isChart && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            if (typeof obj.chart_spec === 'string') {
+              const chartSpec = stripAccountSuffixesInChartSpec(JSON.parse(obj.chart_spec));
+              obj.chart_spec = JSON.stringify(chartSpec);
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+
+        if (isTable && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            const rs = obj.result_set || (obj.table && obj.table.result_set);
+            if (rs) {
+              stripAccountSuffixesInResultSet(rs);
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+
+        if (isFinalResponse && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            if (Array.isArray(obj.content)) {
+              for (const item of obj.content) {
+                if (item && item.type === 'chart' && item.chart && typeof item.chart.chart_spec === 'string') {
+                  const chartSpec = stripAccountSuffixesInChartSpec(JSON.parse(item.chart.chart_spec));
+                  item.chart.chart_spec = JSON.stringify(chartSpec);
+                } else if (item && item.type === 'table' && item.table && item.table.result_set) {
+                  stripAccountSuffixesInResultSet(item.table.result_set);
+                }
+              }
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+
         return rawEvent;
       };
 
