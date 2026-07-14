@@ -13,6 +13,31 @@ import { ChartVisualization } from '../ChartVisualization';
 import { ChartContent } from '../../types/chart';
 import { hasUsableChartData } from '../../utils/chatUtils';
 
+// Isolates chart-render failures so a single bad chart spec can't crash the whole app.
+class ChartErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error: unknown) {
+    // eslint-disable-next-line no-console
+    console.error('Chart render error:', error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Typography sx={{ fontSize: '0.8rem', color: '#64748B', py: 1 }}>
+          This chart could not be rendered. The data table below still reflects the result.
+        </Typography>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // explicit tokens — no theme inheritance
 const BLUE    = '#2563EB';
 const BLUE_BG = '#EFF6FF';
@@ -99,7 +124,9 @@ export const ChartsSection: React.FC<ChartsSectionProps> = ({
                   overflow: 'visible',
                 }}
               >
-                <ChartVisualization chartContent={chartContent} height={300} />
+                <ChartErrorBoundary>
+                  <ChartVisualization chartContent={chartContent} height={300} />
+                </ChartErrorBoundary>
               </Box>
             ))}
           </Stack>

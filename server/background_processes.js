@@ -16,6 +16,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const USER_TRACKER_PATH = path.resolve(__dirname, '../user_tracker.csv');
@@ -58,9 +59,9 @@ const saveLastReset = (date) => {
 // Returns the start of the current reset period (e.g. today's midnight for "day").
 // A reset is due when lastReset < currentPeriodStart.
 
-const currentPeriodStart = (now) => {
+const currentPeriodStart = (now, interval = RESET_INTERVAL) => {
   const d = new Date(now);
-  switch (RESET_INTERVAL) {
+  switch (interval) {
     case 'minute':
       d.setSeconds(0, 0);
       return d;
@@ -134,3 +135,49 @@ const tick = () => {
 console.log(`🔄 Credit reset runner started — interval: ${RESET_INTERVAL}, credits: ${RESET_CREDITS}`);
 tick(); // check immediately on startup
 setInterval(tick, 60 * 1000); // re-check every minute
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Eval Runner
+// Fires the eval pipeline on the EVALS_RESET cadence, reusing the same
+// period-boundary logic as the credit reset (state in evals_reset_state.json).
+// The actual run lives in run_eval.js so it can also be triggered standalone:
+//     node server/run_eval.js
+//
+//   EVALS_RESET — minute | hour | day | week | month   (default: week)
+// ──────────────────────────────────────────────────────────────────────────────
+const { runEval } = require('./run_eval');
+
+const EVALS_RESET     = (process.env.EVALS_RESET || 'week').toLowerCase();  // default: weekly
+const EVAL_STATE_PATH = path.resolve(__dirname, '../evals_reset_state.json');
+
+if (!['minute', 'hour', 'day', 'week', 'month'].includes(EVALS_RESET)) {
+  console.error(`❌ Invalid EVALS_RESET "${EVALS_RESET}". Must be: minute | hour | day | week | month`);
+} else {
+  const loadLastEval = () => {
+    try {
+      if (fs.existsSync(EVAL_STATE_PATH)) {
+        const { lastRun } = JSON.parse(fs.readFileSync(EVAL_STATE_PATH, 'utf8'));
+        return lastRun ? new Date(lastRun) : null;
+      }
+    } catch { /* ignore corrupt state */ }
+    return null;
+  };
+  const saveLastEval = (date) => {
+    fs.writeFileSync(EVAL_STATE_PATH, JSON.stringify({ lastRun: date.toISOString() }), 'utf8');
+  };
+
+  const evalTick = () => {
+    const now         = new Date();
+    const periodStart = currentPeriodStart(now, EVALS_RESET);
+    const lastRun     = loadLastEval();
+    if (!lastRun || lastRun < periodStart) {
+      console.log(`⏰ [${now.toISOString()}] Eval boundary crossed — running eval`);
+      saveLastEval(now);   // mark handled up front so a long run can't re-trigger
+      runEval();
+    }
+  };
+
+  console.log(`🧪 Eval runner started — interval: ${EVALS_RESET}`);
+  evalTick();                        // check immediately on startup
+  setInterval(evalTick, 60 * 1000);  // re-check every minute
+}

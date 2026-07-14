@@ -30,8 +30,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
-  ReferenceDot
+  ResponsiveContainer
 } from 'recharts';
 import { ChartVisualizationProps, VegaLiteSpec, RechartsData, CHART_COLORS } from '../types/chart';
 
@@ -229,7 +228,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           type: mark || 'bar',
           data: transformedData,
           originalData,
-          title: vegaSpec.title
+          title: typeof vegaSpec.title === 'object' && vegaSpec.title !== null
+            ? ((vegaSpec.title as any).text ?? '')
+            : vegaSpec.title
         };
       }
 
@@ -250,7 +251,9 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
           type: chartSpec.type,
           data,
           originalData,
-          title: chartSpec.title
+          title: typeof chartSpec.title === 'object' && chartSpec.title !== null
+            ? (chartSpec.title.text ?? '')
+            : chartSpec.title
         };
       }
 
@@ -459,21 +462,6 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
 
   const isMultiSeries = chartConfig.yKeys.length > 1;
   const tabs = isMultiSeries ? ['Trend', 'Compare', 'Table'] : ['Chart', 'Table'];
-
-  // Peak value per series (for Trend annotations) — computed on displayData
-  const peaks = useMemo(() => {
-    const { xKey, yKeys } = chartConfig;
-    if (!displayData || displayData.length === 0 || !isMultiSeries) return [];
-    return yKeys.map((key, i) => {
-      let maxVal = -Infinity;
-      let maxX: any = null;
-      displayData.forEach(row => {
-        const v = typeof row[key] === 'number' ? (row[key] as number) : NaN;
-        if (!isNaN(v) && v > maxVal) { maxVal = v; maxX = row[xKey]; }
-      });
-      return { key, maxVal, maxX, color: CHART_COLORS[i % CHART_COLORS.length] };
-    }).filter(p => p.maxX !== null);
-  }, [displayData, chartConfig, isMultiSeries]);
 
   // Key insights for multi-series data
   const insights = useMemo(() => {
@@ -693,7 +681,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   }
                   return value;
                 }}
-                domain={['dataMin * 0.95', 'dataMax * 1.1']}
+                domain={['auto', 'auto']}
                 width={70}
               />
               <Tooltip 
@@ -727,19 +715,6 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                   strokeWidth={3}
                   dot={{ fill: CHART_COLORS[index % CHART_COLORS.length], strokeWidth: 2, r: 5 }}
                   activeDot={{ r: 8, stroke: CHART_COLORS[index % CHART_COLORS.length], strokeWidth: 3, fill: '#ffffff' }}
-                />
-              ))}
-              {/* Peak annotations — one dot+label per series */}
-              {peaks.map(({ key, maxVal, maxX, color }) => (
-                <ReferenceDot
-                  key={`peak-${key}`}
-                  x={maxX}
-                  y={maxVal}
-                  r={8}
-                  fill={color}
-                  stroke="#ffffff"
-                  strokeWidth={2}
-                  label={{ value: `▲ ${maxVal}`, position: 'top', fontSize: 11, fontWeight: 600, fill: color }}
                 />
               ))}
             </LineChart>
@@ -1248,7 +1223,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
       <Box sx={{ p: 2, pb: 0 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
           <Typography variant="h6" sx={{ fontWeight: 600, textAlign: 'center', flex: 1 }}>
-            {title || 'Data Visualization'}
+            {(typeof title === 'object' && title !== null ? (title as any).text : title) || 'Data Visualization'}
           </Typography>
         </Box>
 

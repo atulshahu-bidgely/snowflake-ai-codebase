@@ -19,6 +19,8 @@
  * - LangSmith latency reflects only the actual agent response time (not the polling wait).
  */
 const refusal_key="hdhkashqhdkjasdhaskhddkjas";
+const scrub_terms = ["nothing else, then pass the marker","nothing else, then pass the out-of-scope marker.", "(Consumption > 0 users only shown)", ", then append the marker." , "I should append the marker" , " nothing else, then pass the marker." , '""' , "nothing else, then append the required marker", "hdhkashqhdkjasdhaskhddkjas","xyzhello123xoxoxofollowUp",", then append the marker ",", append the marker" , "append the marker"]; // removed from answer AND thinking text; NO refund
+const followup_key = "xyzhello123xoxoxofollowUp"; // follow-up marker -> FULL refund (net charge 0); out-of-context takes precedence
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -45,7 +47,33 @@ function resolveResetCredits() {
 const RESET_CREDITS = resolveResetCredits();
 console.log('Credit allowance (RESET_CREDITS): ' + RESET_CREDITS);
 
+// ── computer_sleep_connection_break key ledger ─────────────────────────────────────────────────────
+// Tracks computer_sleep_connection_break keys that have already been charged, so a query that is
+// auto-resumed by the client (e.g. after the computer slept mid-stream) and
+// arrives again with the SAME key is NOT billed a second time. In-memory with
+// a TTL — covers the resume window without growing unbounded.
+const CHARGED_KEYS = new Map();
+const CHARGED_KEY_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const getPriorCharge = (key) => {
+  const entry = CHARGED_KEYS.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CHARGED_KEY_TTL_MS) { CHARGED_KEYS.delete(key); return null; }
+  return entry;
+};
+const rememberCharge = (key, creditsLeft) => {
+  CHARGED_KEYS.set(key, { creditsLeft, ts: Date.now() });
+  if (CHARGED_KEYS.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of CHARGED_KEYS) {
+      if (now - v.ts > CHARGED_KEY_TTL_MS) CHARGED_KEYS.delete(k);
+    }
+  }
+};
+
 const app = express();
+// Behind Railway's proxy: trust the first hop so X-Forwarded-For is read correctly
+// (fixes express-rate-limit ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
+app.set('trust proxy', 1);
 // Render uses PORT, local dev uses SERVER_PORT
 const PORT = process.env.PORT || process.env.SERVER_PORT || CONFIG.DEFAULT_PORT;
 
@@ -132,7 +160,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Accept', 'X-Computer-Sleep-Connection-Break-Key'],
   exposedHeaders: ['X-Credits-Left', 'X-Charged-Cost', 'X-Has-Enough-Credits'],
 };
 
@@ -447,6 +475,220 @@ const fetchCredits = async (requestId) => {
 };
 
 // ============================================================================
+// Snowflake Response Logging  (in addition to LangSmith)
+// ============================================================================
+//
+// Writes one row per completed query to a Snowflake table so every response —
+// plus its metadata, tokens, latency, credits and cost — is queryable in the
+// warehouse alongside LangSmith. Fire-and-forget: a logging failure never blocks
+// or fails the user response.
+//
+// The target table is HARDCODED below (admin-created; the app only has INSERT).
+// Only the warehouse/role are env-tunable:
+//   CORTEX_LOG_WAREHOUSE=...   (optional; defaults to SNOWFLAKE_WAREHOUSE)
+//   CORTEX_LOG_ROLE=...        (optional; defaults to SNOWFLAKE_ROLE)
+const CORTEX_LOG_TABLE     = 'PRE_PROD_DB.RPT_AWB.GENAI_USAGE_LOG_V2'; // hardcoded: admin-created table, not configurable via env
+const CORTEX_LOG_ENABLED   = Boolean(CORTEX_LOG_TABLE);
+const CORTEX_LOG_WAREHOUSE = process.env.CORTEX_LOG_WAREHOUSE || process.env.SNOWFLAKE_WAREHOUSE || 'wh_agent_demo';
+const CORTEX_LOG_ROLE      = process.env.CORTEX_LOG_ROLE || process.env.SNOWFLAKE_ROLE || undefined;
+if (CORTEX_LOG_ENABLED) console.log('🗄️  Cortex response logging -> ' + CORTEX_LOG_TABLE);
+
+/** Iterates SSE events as (eventName, dataString) pairs. CRLF-safe. */
+const iterateSseEvents = (sseText, cb) => {
+  for (const rawEvent of String(sseText || '').split(/\r?\n\r?\n/)) {
+    let evt = null, dataStr = null;
+    for (const l of rawEvent.split(/\r?\n/)) {
+      if (l.startsWith('event:')) evt = l.slice(6).trim();
+      else if (l.startsWith('data:')) dataStr = (dataStr || '') + l.slice(5).trim();
+    }
+    if (evt) cb(evt, dataStr);
+  }
+};
+
+/** Concatenated answer text from response.text.delta events (refusal sentinel removed). */
+const extractAnswerTextFromSSE = (sseText) => {
+  let out = '';
+  iterateSseEvents(sseText, (evt, data) => {
+    if (evt === 'response.text.delta' && data && data.startsWith('{')) {
+      try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
+    }
+  });
+  let cleaned = out.split(refusal_key).join('').split(followup_key).join('');
+  for (const t of scrub_terms) cleaned = cleaned.split(t).join('');
+  return cleaned.trim();
+};
+
+/** Concatenated chain-of-thought from any response.*thinking* delta events. */
+const extractThinkingFromSSE = (sseText) => {
+  let out = '';
+  iterateSseEvents(sseText, (evt, data) => {
+    if (evt && evt.includes('thinking') && data && data.startsWith('{')) {
+      try { const o = JSON.parse(data); if (typeof o.text === 'string') out += o.text; } catch { /* skip */ }
+    }
+  });
+  let cleaned = out;
+  for (const t of scrub_terms) cleaned = cleaned.split(t).join('');
+  return cleaned.trim();
+};
+
+/** Everything else in the stream: every SSE event that is NOT answer-text or thinking
+ *  text (e.g. response.created, metadata, tool/agent events, usage, request_id, done).
+ *  Returned as an ordered array of { event, data } so the full remainder is preserved. */
+const extractMiscFromSSE = (sseText) => {
+  const misc = [];
+  iterateSseEvents(sseText, (evt, data) => {
+    if (!evt) return;
+    if (evt === 'response.text.delta') return; // -> final_answer
+    if (evt.includes('thinking')) return;      // -> thinking
+    let parsed = data;
+    if (data && data.startsWith('{')) { try { parsed = JSON.parse(data); } catch { /* keep raw */ } }
+    misc.push({ event: evt, data: parsed });
+  });
+  return misc;
+};
+
+/** Executed SQL pulled from system_execute_sql tool results in the stream.
+ *  Returns an ordered, de-duplicated array of { sql, query_id }. The compiled
+ *  statement Cortex actually ran lives at tool_result content[].json.sql; we
+ *  walk every non-text/non-thinking event and collect any `sql` string found. */
+const extractSqlFromSSE = (sseText) => {
+  const out = [];
+  const seen = new Set();
+  const addSql = (sql, queryId) => {
+    if (typeof sql !== 'string') return;
+    const clean = sql.trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    out.push({ sql: clean, query_id: queryId || null });
+  };
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (typeof node.sql === 'string') addSql(node.sql, node.query_id);
+    for (const k of Object.keys(node)) walk(node[k]);
+  };
+  iterateSseEvents(sseText, (evt, data) => {
+    if (!evt || !data || !data.startsWith('{')) return;
+    if (evt === 'response.text.delta' || evt.includes('thinking')) return;
+    try { walk(JSON.parse(data)); } catch { /* skip */ }
+  });
+  return out;
+};
+
+/** Splits the collected SQL into { intermediate, final }. The `final` query is the
+ *  statement actually executed against Snowflake — the one that carries a real
+ *  query_id (the compiled Cortex SQL). If several ran, the last executed one wins;
+ *  everything else (reference/verified queries + the agent's draft SQL) is intermediate. */
+const extractSqlBucketsFromSSE = (sseText) => {
+  const list = extractSqlFromSSE(sseText);
+  let finalIdx = -1;
+  for (let i = 0; i < list.length; i++) if (list[i].query_id) finalIdx = i;
+  if (finalIdx === -1) finalIdx = list.length - 1; // no query_id anywhere -> last item is final
+  return {
+    intermediate: list.filter((_, i) => i !== finalIdx),
+    final: finalIdx >= 0 ? list[finalIdx] : null,
+  };
+};
+
+/** The single final (executed) SQL statement as a clean one-line string.
+ *  Collapses newlines/tabs/repeated spaces so it stores tidily in a VARCHAR column. */
+const extractFinalSqlFromSSE = (sseText) => {
+  const f = extractSqlBucketsFromSSE(sseText).final;
+  if (!f || typeof f.sql !== 'string') return null;
+  return f.sql.replace(/\s+/g, ' ').trim();
+};
+
+/** Splits one raw SSE response into the three LangSmith output buckets. */
+const splitSseResponse = (sseText) => ({
+  final_answer: extractAnswerTextFromSSE(sseText), // the text printed on the console
+  thinking:     extractThinkingFromSSE(sseText),   // the chain-of-thought
+  SQL:          extractSqlBucketsFromSSE(sseText), // { intermediate: [...], final: {...} }
+  misc:         extractMiscFromSSE(sseText),        // everything else in the stream
+});
+
+/** Pulls the latest user message text out of the request body. */
+const extractUserInput = (requestBody) => {
+  const msgs = Array.isArray(requestBody && requestBody.messages) ? requestBody.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i] && msgs[i].role === 'user') {
+      const c = msgs[i].content;
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) return c.map(p => (p && (p.text || p.content)) || '').join(' ').trim();
+    }
+  }
+  return '';
+};
+
+/**
+ * Inserts one row into CORTEX_LOG_TABLE via the Snowflake SQL REST API using bound
+ * parameters (no string interpolation of user content). Numeric columns are parsed
+ * with TRY_TO_*, so missing values become NULL rather than failing the insert.
+ *
+ * Field meanings:
+ *   credits      = Snowflake TOKEN_CREDITS consumed by the agent (ACCOUNT_USAGE)
+ *   costUSD      = credits * CREDIT_COST_USD
+ *   creditsUsed  = app-side category charge deducted from the user's balance
+ *   creditsLeft  = user's remaining balance after the charge
+ */
+const logCortexResponseToSnowflake = async (f = {}) => {
+  if (!CORTEX_LOG_ENABLED) return;
+  try {
+    const totalTokens = (f.inputTokens != null || f.outputTokens != null)
+      ? (Number(f.inputTokens) || 0) + (Number(f.outputTokens) || 0)
+      : null;
+
+    const sql = `INSERT INTO ${CORTEX_LOG_TABLE}
+  (TS, REQUEST_ID, RUN_ID, USER_ID, PILOT_NAME, CATEGORY, STATUS,
+   INPUT, THINKING, OUTPUT, SQL_QUERIES, FINAL_SQL_QUERY,
+   INPUT_TOKENS, OUTPUT_TOKENS, TOTAL_TOKENS,
+   LATENCY_MS, OUTPUT_STORAGE_SIZE_MB,
+   CREDITS, COST_USD, CREDITS_USED, CREDITS_LEFT, METADATA)
+SELECT
+  TO_TIMESTAMP_NTZ(?), ?, ?, ?, ?, ?, TRY_TO_NUMBER(?),
+  ?, ?, ?, PARSE_JSON(?), ?,
+  TRY_TO_NUMBER(?), TRY_TO_NUMBER(?), TRY_TO_NUMBER(?),
+  TRY_TO_NUMBER(?), TRY_TO_DOUBLE(?),
+  TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), TRY_TO_DOUBLE(?), PARSE_JSON(?)`;
+
+    // NOT NULL identifier columns: substitute the sentinel '-1' when an id was never
+    // assigned (e.g. no Snowflake request_id on the no-id path, or run_id with LangSmith off).
+    const idOrSentinel = (v) => (v == null || v === '') ? '-1' : String(v);
+
+    const vals = [
+      f.tsIso || new Date().toISOString(),
+      idOrSentinel(f.requestId), idOrSentinel(f.runId), idOrSentinel(f.userId), f.agentName, f.category, f.status,
+      f.input, f.thinking, f.output, JSON.stringify(f.sqlQueries || []), f.finalSqlQuery || null,
+      f.inputTokens, f.outputTokens, totalTokens,
+      f.latencyMs, f.outputSizeMb,
+      f.credits, f.costUSD, f.creditsUsed, f.creditsLeft,
+      JSON.stringify(f.metadata || {}),
+    ];
+    const bindings = {};
+    vals.forEach((v, i) => { bindings[String(i + 1)] = { type: 'TEXT', value: v == null ? '' : String(v) }; });
+
+    const resp = await fetch(`https://${SNOWFLAKE_CONFIG.host}/api/v2/statements`, {
+      method: 'POST',
+      headers: getSnowflakeAuthHeaders(),
+      body: JSON.stringify({
+        statement: sql,
+        bindings,
+        warehouse: CORTEX_LOG_WAREHOUSE,
+        role: CORTEX_LOG_ROLE,
+        timeout: 60,
+      }),
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      console.warn(`⚠️  Snowflake log insert failed (${resp.status}): ${String(t).slice(0, 300)}`);
+    } else {
+      console.log(`🗄️  Logged response to ${CORTEX_LOG_TABLE} (run ${f.runId || 'n/a'})`);
+    }
+  } catch (err) {
+    console.warn('⚠️  logCortexResponseToSnowflake failed:', err.message);
+  }
+};
+
+// ============================================================================
 // LangSmith Tracing
 // ============================================================================
 
@@ -564,17 +806,32 @@ const buildUsageMetadata = ({ inputTokens, outputTokens, costUSD } = {}) => {
  * Polling schedule (seconds after stream end):
  *   10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300
  */
-const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens, creditsLeft }) => {
-  if (!langsmith || !runId) return;
+const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, requestId, expectedSize, inputTokens, outputTokens, creditsLeft, log }) => {
+  if ((!langsmith || !runId) && !CORTEX_LOG_ENABLED) return;
+
+  // Mirror the resolved result (with credits/cost once known) into the Snowflake log table.
+  const writeSnowflakeLog = (creditsObj) => logCortexResponseToSnowflake({
+    ...(log || {}),
+    runId: (log && log.runId) || runId,
+    status, latencyMs, requestId,
+    inputTokens, outputTokens,
+    outputSizeMb: expectedSize,
+    creditsLeft,
+    credits: creditsObj ? creditsObj.credits : null,
+    costUSD: creditsObj ? creditsObj.costUSD : null,
+  });
 
   // No request ID — nothing to look up, close immediately instead of spinning 300s
   if (!requestId) {
     const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
-    langsmith.updateRun(runId, {
-      outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
-      end_time: streamEndTime,
-      extra: { metadata: { status, latencyMs, streamed: true } },
-    }).catch(err => console.warn('⚠️ LangSmith updateRun failed:', err.message));
+    if (langsmith && runId) {
+      langsmith.updateRun(runId, {
+        outputs: { ...output, ...(usage_metadata && { usage_metadata }) },
+        end_time: streamEndTime,
+        extra: { metadata: { status, latencyMs, streamed: true } },
+      }).catch(err => console.warn('⚠️ LangSmith updateRun failed:', err.message));
+    }
+    writeSnowflakeLog(null);
     return;
   }
 
@@ -591,8 +848,8 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
 
       if (credits) {
         const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens, costUSD: credits.costUSD });
-        await langsmith.updateRun(runId, {
-          outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
+        if (langsmith && runId) await langsmith.updateRun(runId, {
+          outputs: { ...output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime, // actual stream end, not now
           extra: {
             metadata: {
@@ -605,6 +862,7 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
             },
           },
         });
+        writeSnowflakeLog(credits);
         console.log(`💳 Credits found at +${elapsed}s — ${credits.credits} credits = $${credits.costUSD.toFixed(4)}`);
         return;
       }
@@ -617,11 +875,12 @@ const closeRunWithCredits = (runId, { output, status, latencyMs, streamEndTime, 
         // All 300s exhausted — close without credits rather than leave the run open
         console.warn(`⚠️ No credit data after +${elapsed}s, closing run without credits`);
         const usage_metadata = buildUsageMetadata({ inputTokens, outputTokens });
-        await langsmith.updateRun(runId, {
-          outputs: { response: output, ...(usage_metadata && { usage_metadata }) },
+        if (langsmith && runId) await langsmith.updateRun(runId, {
+          outputs: { ...output, ...(usage_metadata && { usage_metadata }) },
           end_time: streamEndTime,
           extra: { metadata: { status, latencyMs, streamed: true, output_size_mb: expectedSize } },
         });
+        writeSnowflakeLog(null);
       }
     } catch (err) {
       console.warn(`⚠️ closeRunWithCredits attempt ${attempt} failed:`, err.message);
@@ -870,7 +1129,17 @@ let creditsLeft = 0;
 let chargedCost = 0;
 let hasEnoughCredits = true;
 
-try {
+// If this exact query was already charged (a client auto-resume after a
+// dropped connection sends the same X-Computer-Sleep-Connection-Break-Key), skip the deduction.
+const computerSleepConnectionBreakKey = req.headers['x-computer-sleep-connection-break-key'] || null;
+const priorCharge = computerSleepConnectionBreakKey ? getPriorCharge(computerSleepConnectionBreakKey) : null;
+
+if (priorCharge) {
+ chargedCost = 0;
+ creditsLeft = priorCharge.creditsLeft;
+ hasEnoughCredits = true;
+ console.log(`♻️  Resume after computer sleep / connection break (key ${computerSleepConnectionBreakKey}) — no credits charged. Credits left: ${creditsLeft}`);
+} else try {
  const fs = require('fs');
  const csvRaw = fs.existsSync(USER_TRACKER_PATH)
  ? fs.readFileSync(USER_TRACKER_PATH, 'utf8')
@@ -949,6 +1218,11 @@ try {
  console.warn('⚠️ Could not read/write user_tracker.csv:', csvErr.message);
 }
 
+// Record this charge so a later auto-resume with the same key is free.
+if (computerSleepConnectionBreakKey && hasEnoughCredits && !priorCharge) {
+ rememberCharge(computerSleepConnectionBreakKey, creditsLeft);
+}
+
 // ── Signal updated credits to the client immediately (as soon as the request
 //    goes through the CSV check) — sent as response headers so the frontend can
 //    refresh the credits pill the moment the stream's headers arrive, without
@@ -973,6 +1247,22 @@ if (!hasEnoughCredits) {
  },
 });
 
+
+ logCortexResponseToSnowflake({
+  runId: langsmithRunId,
+  userId: process.env.USER_ID || 'unknown_user',
+  agentName,
+  category: requestBody.metadata?.category || null,
+  input: extractUserInput(requestBody),
+  output: 'Insufficient credits',
+  thinking: '',
+  status: 402,
+  latencyMs: Date.now() - startTime,
+  creditsUsed: 0,
+  creditsLeft: 0,
+  tsIso: new Date(startTime).toISOString(),
+  metadata: { source: 'insufficient_credits', has_enough_credits: false },
+ });
 
  return res.status(402).json({
   message: 'Insufficient credits',
@@ -1021,6 +1311,21 @@ if (!hasEnoughCredits) {
  },
 });
 
+      logCortexResponseToSnowflake({
+        runId: langsmithRunId,
+        userId: process.env.USER_ID || 'unknown_user',
+        agentName,
+        category: requestBody.metadata?.category || null,
+        input: extractUserInput(requestBody),
+        output: errorParts.join('\n'),
+        thinking: '',
+        status: statusCode,
+        latencyMs: Date.now() - startTime,
+        creditsUsed: chargedCost,
+        creditsLeft,
+        tsIso: new Date(startTime).toISOString(),
+        metadata: { source: 'agent_error' },
+      });
       return res.status(statusCode).json({ errorParts });
     }
 
@@ -1049,7 +1354,8 @@ if (!hasEnoughCredits) {
       let fullStreamText = '';
       let sseBuf = '';             // buffers incomplete SSE events across chunks
       let textCarry = '';          // partial-sentinel holdback at the assembled-TEXT level
-      let refusalDetected = false; // set when the sentinel appears in the answer text
+      let refusalDetected = false; // set when the out-of-context sentinel appears in the answer text
+      let followupDetected = false; // set when the follow-up marker appears -> full refund
 
       // The sentinel is split across response.text.delta events, so it is only contiguous once
       // the delta texts are concatenated. Strip it in the TEXT domain, holding back just a
@@ -1057,17 +1363,160 @@ if (!hasEnoughCredits) {
       const stripSentinelText = (incoming) => {
         textCarry += incoming;
         if (textCarry.includes(refusal_key)) {
-          refusalDetected = true;
+          refusalDetected = true;                       // out-of-context sentinel -> net charge 1
           textCarry = textCarry.split(refusal_key).join('');
         }
+        if (textCarry.includes(followup_key)) {
+          followupDetected = true;                      // follow-up marker -> full refund (net charge 0)
+          textCarry = textCarry.split(followup_key).join('');
+        }
+        for (const term of scrub_terms) {               // phrase -> removed, no refund
+          if (textCarry.includes(term)) textCarry = textCarry.split(term).join('');
+        }
         let hold = 0;
-        const maxK = Math.min(textCarry.length, refusal_key.length - 1);
+        const tokens = [refusal_key, followup_key, ...scrub_terms];
+        const maxLen = Math.max(...tokens.map(t => t.length));
+        const maxK = Math.min(textCarry.length, maxLen - 1);
         for (let k = maxK; k > 0; k--) {
-          if (textCarry.slice(textCarry.length - k) === refusal_key.slice(0, k)) { hold = k; break; }
+          const tail = textCarry.slice(textCarry.length - k);
+          if (tokens.some(t => t.slice(0, k) === tail)) { hold = k; break; }
         }
         const outText = hold > 0 ? textCarry.slice(0, textCarry.length - hold) : textCarry;
         textCarry = hold > 0 ? textCarry.slice(textCarry.length - hold) : '';
         return outText;
+      };
+
+      // Same hold-back logic for the THINKING stream (the phrase is split across many tiny
+      // deltas). Never sets refusalDetected — scrubbing a leaked phrase must not refund.
+      let thinkingCarry = '';
+      const stripThinkingText = (incoming) => {
+        thinkingCarry += incoming;
+        for (const term of scrub_terms) {
+          if (thinkingCarry.includes(term)) thinkingCarry = thinkingCarry.split(term).join('');
+        }
+        let hold = 0;
+        const maxLen = Math.max(...scrub_terms.map(t => t.length));
+        const maxK = Math.min(thinkingCarry.length, maxLen - 1);
+        for (let k = maxK; k > 0; k--) {
+          const tail = thinkingCarry.slice(thinkingCarry.length - k);
+          if (scrub_terms.some(t => t.slice(0, k) === tail)) { hold = k; break; }
+        }
+        const out = hold > 0 ? thinkingCarry.slice(0, thinkingCarry.length - hold) : thinkingCarry;
+        thinkingCarry = hold > 0 ? thinkingCarry.slice(thinkingCarry.length - hold) : '';
+        return out;
+      };
+
+      // ── Account/acct column suffix strip ─────────────────────────────────
+      // For any table/chart column whose header/field name contains "account" or
+      // "acct" (case-insensitive), drop everything from the first "-" onward in
+      // the cell value, e.g. "129652155-0" -> "129652155". Applied directly on
+      // the structured chart/table payloads inside the SSE stream, before they
+      // reach the client.
+      const ACCOUNT_HEADER_RE = /account|acct/i;
+      const stripAccountValue = (value) => {
+        if (typeof value !== 'string') return value;
+        const idx = value.indexOf('-');
+        return idx === -1 ? value : value.slice(0, idx);
+      };
+
+      let tableLineCarry = '';
+      let tablePendingHeaderCells = null;
+      let tableActive = false;
+      let tableActiveAccountCols = [];
+
+      const SEPARATOR_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+      const splitTableCells = (line) => {
+        let l = line.trim();
+        if (l.startsWith('|')) l = l.slice(1);
+        if (l.endsWith('|')) l = l.slice(0, -1);
+        return l.split('|').map(c => c.trim());
+      };
+
+      const stripAccountCellSuffix = (cell) => {
+        const idx = cell.indexOf('-');
+        return idx === -1 ? cell : cell.slice(0, idx).trim();
+      };
+
+      const processTableLine = (line) => {
+        const hasPipe = line.includes('|') && line.trim().length > 0;
+
+        if (hasPipe && SEPARATOR_RE.test(line) && tablePendingHeaderCells) {
+          const headerCells = tablePendingHeaderCells;
+          tableActiveAccountCols = headerCells
+            .map((h, idx) => (ACCOUNT_HEADER_RE.test(h) ? idx : -1))
+            .filter(idx => idx !== -1);
+          tableActive = tableActiveAccountCols.length > 0;
+          tablePendingHeaderCells = null;
+          return line;
+        }
+
+        if (hasPipe && tableActive) {
+          const cells = splitTableCells(line);
+          for (const idx of tableActiveAccountCols) {
+            if (cells[idx] !== undefined) cells[idx] = stripAccountCellSuffix(cells[idx]);
+          }
+          tablePendingHeaderCells = cells;
+          return '| ' + cells.join(' | ') + ' |';
+        }
+
+        if (hasPipe) {
+          tablePendingHeaderCells = splitTableCells(line);
+          return line;
+        }
+
+        tablePendingHeaderCells = null;
+        tableActive = false;
+        tableActiveAccountCols = [];
+        return line;
+      };
+
+      const stripAccountSuffixesInMarkdownText = (incoming) => {
+        tableLineCarry += incoming;
+        const lastNewline = tableLineCarry.lastIndexOf('\n');
+        if (lastNewline === -1) return '';
+        const completeChunk = tableLineCarry.slice(0, lastNewline);
+        tableLineCarry = tableLineCarry.slice(lastNewline + 1);
+        const outLines = completeChunk.split('\n').map(processTableLine);
+        return outLines.join('\n') + '\n';
+      };
+
+      const flushAccountSuffixCarry = () => {
+        if (!tableLineCarry) return '';
+        const out = processTableLine(tableLineCarry);
+        tableLineCarry = '';
+        return out;
+      };
+
+      // Strips account-suffix values inside a parsed vega-lite chart spec's data.values rows.
+      const stripAccountSuffixesInChartSpec = (chartSpec) => {
+        if (!chartSpec || !chartSpec.data || !Array.isArray(chartSpec.data.values)) return chartSpec;
+        chartSpec.data.values = chartSpec.data.values.map(row => {
+          if (!row || typeof row !== 'object') return row;
+          const out = { ...row };
+          for (const key of Object.keys(out)) {
+            if (ACCOUNT_HEADER_RE.test(key)) out[key] = stripAccountValue(out[key]);
+          }
+          return out;
+        });
+        return chartSpec;
+      };
+
+      // Strips account-suffix values inside a Snowflake result_set (rowType headers + row arrays).
+      const stripAccountSuffixesInResultSet = (resultSet) => {
+        if (!resultSet || !resultSet.resultSetMetaData || !Array.isArray(resultSet.data)) return resultSet;
+        const rowType = resultSet.resultSetMetaData.rowType || [];
+        const accountColIdxs = rowType
+          .map((col, idx) => (col && ACCOUNT_HEADER_RE.test(col.name || '') ? idx : -1))
+          .filter(idx => idx !== -1);
+        if (accountColIdxs.length === 0) return resultSet;
+        resultSet.data = resultSet.data.map(row => {
+          if (!Array.isArray(row)) return row;
+          const out = [...row];
+          for (const idx of accountColIdxs) out[idx] = stripAccountValue(out[idx]);
+          return out;
+        });
+        return resultSet;
       };
 
       // Rewrites one SSE event: cleans the sentinel out of response.text.delta payloads,
@@ -1079,16 +1528,65 @@ if (!hasEnoughCredits) {
           if (lines[i].startsWith('event:')) evt = lines[i].slice(6).trim();
           else if (lines[i].startsWith('data:')) { dataIdx = i; dataStr = lines[i].slice(5).trim(); }
         }
-        if (evt === 'response.text.delta' && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+        const isText = evt === 'response.text.delta';
+        const isThinking = evt && evt.includes('thinking');
+        const isChart = evt === 'response.chart';
+        const isTable = evt === 'response.table';
+        const isFinalResponse = evt === 'response';
+
+        if ((isText || isThinking) && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
           try {
             const obj = JSON.parse(dataStr);
             if (typeof obj.text === 'string') {
-              obj.text = stripSentinelText(obj.text);
+              obj.text = isText ? stripAccountSuffixesInMarkdownText(stripSentinelText(obj.text)) : stripThinkingText(obj.text);
               lines[dataIdx] = 'data: ' + JSON.stringify(obj);
               return lines.join('\n');
             }
           } catch { /* fall through — emit unchanged */ }
         }
+
+        if (isChart && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            if (typeof obj.chart_spec === 'string') {
+              const chartSpec = stripAccountSuffixesInChartSpec(JSON.parse(obj.chart_spec));
+              obj.chart_spec = JSON.stringify(chartSpec);
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+
+        if (isTable && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            const rs = obj.result_set || (obj.table && obj.table.result_set);
+            if (rs) {
+              stripAccountSuffixesInResultSet(rs);
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+
+        if (isFinalResponse && dataIdx !== -1 && dataStr && dataStr.startsWith('{')) {
+          try {
+            const obj = JSON.parse(dataStr);
+            if (Array.isArray(obj.content)) {
+              for (const item of obj.content) {
+                if (item && item.type === 'chart' && item.chart && typeof item.chart.chart_spec === 'string') {
+                  const chartSpec = stripAccountSuffixesInChartSpec(JSON.parse(item.chart.chart_spec));
+                  item.chart.chart_spec = JSON.stringify(chartSpec);
+                } else if (item && item.type === 'table' && item.table && item.table.result_set) {
+                  stripAccountSuffixesInResultSet(item.table.result_set);
+                }
+              }
+              lines[dataIdx] = 'data: ' + JSON.stringify(obj);
+              return lines.join('\n');
+            }
+          } catch { /* fall through — emit unchanged */ }
+        }
+
         return rawEvent;
       };
 
@@ -1143,27 +1641,41 @@ if (!hasEnoughCredits) {
           // line), then any held-back real text (sentinel already removed) as a final delta.
           if (!res.writableEnded) {
             if (sseBuf) { res.write(Buffer.from(transformSseEvent(sseBuf), 'utf8')); sseBuf = ''; }
-            const leftover = textCarry.split(refusal_key).join('');
+            let leftover = textCarry.split(refusal_key).join('').split(followup_key).join('');
+            for (const t of scrub_terms) leftover = leftover.split(t).join('');
             textCarry = '';
+            leftover += flushAccountSuffixCarry();
             if (leftover) writeSseEvent(res, 'response.text.delta', { text: leftover });
+            let leftoverThinking = thinkingCarry;
+            for (const t of scrub_terms) leftoverThinking = leftoverThinking.split(t).join('');
+            thinkingCarry = '';
+            if (leftoverThinking) writeSseEvent(res, 'response.thinking.delta', { text: leftoverThinking });
           }
 
-          // If the sentinel was stripped, the agent refused — refund so the net charge is 1.
+          // Refund policy:
+          //   out-of-context sentinel (refusalDetected) -> net charge 1
+          //   follow-up marker (followupDetected)       -> full refund, net charge 0
+          // Precedence: if BOTH fired, out-of-context wins and 1 credit is subtracted.
           const refused = refusalDetected;
+          const fullRefund = followupDetected;
           let finalCreditsLeft = creditsLeft;
-          if (hasEnoughCredits && chargedCost > 1 && refused) {
-            const refund = chargedCost - 1; // category cost consumed, minus 1
-            const endUserId = process.env.USER_ID || 'unknown_user';
-            const newBal = refundCredits(endUserId, refund);
-            if (newBal != null) {
-              finalCreditsLeft = newBal;
-              console.log(`\u21a9\ufe0f  Refusal sentinel stripped \u2014 refunded ${refund}, net charge 1, credits left: ${newBal}`);
-              if (!res.writableEnded) writeSseEvent(res, 'response.credits_adjusted', { creditsLeft: newBal });
+          if (hasEnoughCredits && (refused || fullRefund)) {
+            const netCharge = refused ? 1 : 0;          // out-of-context precedence
+            const refund = chargedCost - netCharge;     // give back everything above the net charge
+            if (refund > 0) {
+              const reason = refused ? 'out-of-context sentinel' : 'follow-up marker';
+              const endUserId = process.env.USER_ID || 'unknown_user';
+              const newBal = refundCredits(endUserId, refund);
+              if (newBal != null) {
+                finalCreditsLeft = newBal;
+                console.log(`\u21a9\ufe0f  ${reason} stripped \u2014 refunded ${refund}, net charge ${netCharge}, credits left: ${newBal}`);
+                if (!res.writableEnded) writeSseEvent(res, 'response.credits_adjusted', { creditsLeft: newBal });
+              }
             }
           }
 
           closeRunWithCredits(langsmithRunId, {
-            output: fullStreamText,
+            output: splitSseResponse(fullStreamText),
             status: statusCode,
             latencyMs: Date.now() - startTime,
             streamEndTime: new Date().toISOString(),
@@ -1172,6 +1684,20 @@ if (!hasEnoughCredits) {
             inputTokens,
             outputTokens,
             creditsLeft: finalCreditsLeft,
+            log: {
+              runId: langsmithRunId,
+              userId: process.env.USER_ID || 'unknown_user',
+              agentName,
+              category: requestBody.metadata?.category || null,
+              input: extractUserInput(requestBody),
+              output: extractAnswerTextFromSSE(fullStreamText),
+              thinking: extractThinkingFromSSE(fullStreamText),
+              creditsUsed: chargedCost,
+              tsIso: new Date(startTime).toISOString(),
+              sqlQueries: extractSqlBucketsFromSSE(fullStreamText),
+              finalSqlQuery: extractFinalSqlFromSSE(fullStreamText),
+              metadata: { source: 'stream_end', refused, snowflake_request_id: finalRequestId },
+            },
           });
         }
 
@@ -1199,13 +1725,27 @@ if (!hasEnoughCredits) {
             const finalRequestId = extractRequestIdFromSSE(fullStreamText) || snowflakeRequestId || null;
             const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
             closeRunWithCredits(langsmithRunId, {
-              output: fullStreamText, status: 499,
+              output: splitSseResponse(fullStreamText), status: 499,
               latencyMs: Date.now() - startTime,
               streamEndTime: new Date().toISOString(),
               requestId: finalRequestId,
               inputTokens,
               outputTokens,
               creditsLeft,
+              log: {
+                runId: langsmithRunId,
+                userId: process.env.USER_ID || 'unknown_user',
+                agentName,
+                category: requestBody.metadata?.category || null,
+                input: extractUserInput(requestBody),
+                output: extractAnswerTextFromSSE(fullStreamText),
+                thinking: extractThinkingFromSSE(fullStreamText),
+                creditsUsed: chargedCost,
+                tsIso: new Date(startTime).toISOString(),
+                sqlQueries: extractSqlBucketsFromSSE(fullStreamText),
+                finalSqlQuery: extractFinalSqlFromSSE(fullStreamText),
+                metadata: { source: 'client_abort_error', snowflake_request_id: finalRequestId },
+              },
             });
           }
           return;
@@ -1245,7 +1785,7 @@ if (!hasEnoughCredits) {
         const finalRequestId = extractRequestIdFromSSE(fullStreamText) || snowflakeRequestId || null;
         const { inputTokens, outputTokens } = extractTokensFromSSE(fullStreamText);
         closeRunWithCredits(langsmithRunId, {
-          output: fullStreamText,
+          output: splitSseResponse(fullStreamText),
           status: 499, // 499 = Client Closed Request (nginx convention)
           latencyMs: Date.now() - startTime,
           streamEndTime: new Date().toISOString(),
@@ -1253,6 +1793,20 @@ if (!hasEnoughCredits) {
           inputTokens,
           outputTokens,
           creditsLeft,
+          log: {
+            runId: langsmithRunId,
+            userId: process.env.USER_ID || 'unknown_user',
+            agentName,
+            category: requestBody.metadata?.category || null,
+            input: extractUserInput(requestBody),
+            output: extractAnswerTextFromSSE(fullStreamText),
+            thinking: extractThinkingFromSSE(fullStreamText),
+            creditsUsed: chargedCost,
+            tsIso: new Date(startTime).toISOString(),
+            sqlQueries: extractSqlBucketsFromSSE(fullStreamText),
+            finalSqlQuery: extractFinalSqlFromSSE(fullStreamText),
+            metadata: { source: 'client_close', snowflake_request_id: finalRequestId },
+          },
         });
       });
 
@@ -1273,6 +1827,22 @@ if (!hasEnoughCredits) {
  },
 });
 
+      logCortexResponseToSnowflake({
+        runId: langsmithRunId,
+        userId: process.env.USER_ID || 'unknown_user',
+        agentName,
+        category: requestBody.metadata?.category || null,
+        input: extractUserInput(requestBody),
+        output: typeof data === 'string' ? data : JSON.stringify(data),
+        thinking: '',
+        status: statusCode,
+        latencyMs: Date.now() - startTime,
+        creditsUsed: chargedCost,
+        creditsLeft,
+        outputSizeMb: (JSON.stringify(data).length * 1e-6).toFixed(4),
+        tsIso: new Date(startTime).toISOString(),
+        metadata: { source: 'non_streaming', snowflake_request_id: snowflakeRequestId },
+      });
       res.json(data);
     }
 
@@ -1292,7 +1862,23 @@ if (!hasEnoughCredits) {
   },
  });
 
-
+ try {
+   logCortexResponseToSnowflake({
+     runId: langsmithRunId,
+     userId: process.env.USER_ID || 'unknown_user',
+     agentName: req.params.agentName,
+     category: (req.body && req.body.metadata && req.body.metadata.category) || null,
+     input: extractUserInput(req.body),
+     output: (sanitizeError(error) || {}).message || 'error',
+     thinking: '',
+     status: 500,
+     latencyMs: Date.now() - startTime,
+     creditsUsed: null,
+     creditsLeft: null,
+     tsIso: new Date(startTime).toISOString(),
+     metadata: { source: 'server_error' },
+   });
+ } catch (_) { /* never let logging break the error path */ }
 
     if (!res.headersSent) {
       // Raw https exposes connection failures on error.code; fetch puts them on error.cause.code

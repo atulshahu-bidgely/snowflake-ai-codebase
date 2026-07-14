@@ -158,9 +158,10 @@ Result limit rule:
 - Default ranked outputs to top ${DEFAULT_RESULT_LIMIT} rows.
 - ${resultLimitText}
 - Do not treat measurement quantities as result counts. For example, "100 MW", "250 kWh", or "30 days" are data values. They should not change the row limit.
-Include a chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points when the result is a ranked/top-N output. Do not emit an empty chart or an empty table. Do not include internal reasoning, sources, or CSV download text.`;
+Include a chart or visualization only when concrete chart rows are available from the query result. Use up to ${resultLimit.limit} ranked data points when the result is a ranked/top-N output. Do not emit an empty chart or an empty table. Do not include internal reasoning, sources, or CSV download text.
+`;
   }
-  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal.`;
+  return `${text}\n\nIMPORTANT: This is a data retrieval question. Provide the key data values clearly and concisely. Keep visualization minimal. (if solar users are queried , consumption of solar users MAY BE NEGATIVE)`;
 };
 
 export const EnergyAssistantPopup: React.FC = () => {

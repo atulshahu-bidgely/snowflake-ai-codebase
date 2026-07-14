@@ -51,7 +51,8 @@
     "build:analyze": "npm run build && npx serve -s build",
     "test": "craco test",
     "eject": "react-scripts eject",
-    "deploy": "./deploy-to-dreamhost.sh"
+    "deploy": "./deploy-to-dreamhost.sh",
+    "eval" : "node server/run_eval.js"
   },
   "eslintConfig": {
     "extends": [
