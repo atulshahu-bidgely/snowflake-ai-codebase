@@ -3,10 +3,13 @@ import re
 import csv
 import json
 import time
+import random
+import threading
 import boto3
 import requests
 from langsmith import Client as LangSmithClient, traceable
 from langsmith.evaluation import evaluate
+from langsmith.run_helpers import get_current_run_tree
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv
 
@@ -19,7 +22,6 @@ METRICS_TO_RUN = {
     "guardrail": False,
     "accuracy":  False,
     "relevance": True,
-    "language":  False,
 }
 N=1 #number of repetitions per example. Set >1 to get a distribution of scores for stochastic agents.
 
@@ -92,7 +94,28 @@ AGENT         = (os.getenv("RAW_AGENT_NAME") or os.getenv("AGENT_NAME") or "").s
 BEDROCK_MODEL = os.getenv("BEDROCK_JUDGE_MODEL", "anthropic.claude-sonnet-4-5")
 AWS_REGION    = os.getenv("AWS_REGION", "us-east-1")
 
+# server.js does NOT put cost/usage in the SSE stream. It opens its own separate
+# LangSmith run per call (createLangSmithRun, run_type "llm") and only attaches
+# real cost to THAT run asynchronously — it polls
+# SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY on an escalating schedule
+# (10s, 20s, ..., 300s after stream end) because ACCOUNT_USAGE has propagation
+# lag (closeRunWithCredits / fetchCredits in server.js). The backend's run id is
+# broadcast to the client via a `response.run_id` SSE event so we can find it.
+# Mirror the backend's own polling schedule (cumulative seconds after stream end).
+CREDIT_POLL_OFFSETS_S = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300]
+CREDIT_POLL_ENABLED   = os.getenv("CREDIT_POLL_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+# Every row polls on the same absolute schedule (+10s, +20s, ...), so with many
+# rows starting at once they'd all hit /runs/{id} in the same instant and trip
+# LangSmith's rate limit (429s seen in practice with just 20 concurrent rows).
+# Cap concurrent poll requests and jitter each row's wait so bursts spread out.
+CREDIT_POLL_MAX_CONCURRENCY = int(os.getenv("CREDIT_POLL_MAX_CONCURRENCY", "4"))
+CREDIT_POLL_JITTER_S        = float(os.getenv("CREDIT_POLL_JITTER_S", "4"))
+_credit_poll_semaphore = threading.Semaphore(CREDIT_POLL_MAX_CONCURRENCY)
+
 print(f"🤖 Bedrock judge: model={BEDROCK_MODEL} | region={AWS_REGION}")
+print(f"💳 Credit polling for agent cost: {'enabled' if CREDIT_POLL_ENABLED else 'disabled'} "
+      f"(mirrors server.js — up to {CREDIT_POLL_OFFSETS_S[-1]}s after stream end, "
+      f"max {CREDIT_POLL_MAX_CONCURRENCY} concurrent poll requests)")
 print(f"🎯 Agent (fallback): {AGENT or '(per-row from dataset)'}")
 print(f"📡 Backend: {BACKEND_URL}")
 print(f"⏱️  Agent timeout: connect={AGENT_CONNECT_TIMEOUT}s read={AGENT_READ_TIMEOUT}s | retries={AGENT_RETRIES}")
@@ -161,16 +184,66 @@ def bedrock_complete(prompt: str, max_tokens: int = 512, retries: int = 2) -> st
     return None
 
 
+def _read_run_with_backoff(run_id: str, agent: str, max_attempts: int = 5):
+    """Read a run from LangSmith, backing off on 429s instead of burning through
+    the credit-poll schedule. A semaphore also caps how many rows can call
+    /runs/{id} at once — with N dataset rows all polling on the same absolute
+    offsets (+10s, +20s, ...), they'd otherwise all fire simultaneously and trip
+    the API's rate limit, which is exactly what happened with just 20 rows."""
+    for attempt in range(max_attempts):
+        with _credit_poll_semaphore:
+            try:
+                return ls_client.read_run(run_id)
+            except requests.exceptions.HTTPError as e:
+                status = getattr(e.response, "status_code", None)
+                if status == 429 and attempt < max_attempts - 1:
+                    retry_after = e.response.headers.get("Retry-After") if e.response is not None else None
+                    wait = float(retry_after) if retry_after else (2 ** attempt) + random.uniform(0, 1)
+                    time.sleep(wait)
+                    continue
+                raise
+
+
+def _poll_backend_cost(backend_run_id: str, agent: str) -> dict | None:
+    """Poll server.js's own LangSmith run for the credit-derived cost it attaches
+    asynchronously (closeRunWithCredits in server.js waits on Snowflake's
+    ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY, which lags real time, so it retries
+    at +10s, +20s, ... up to +300s after the stream ends before giving up).
+    We mirror that schedule (with jitter, so many concurrent rows don't all poll
+    at the same instant) against the same run id, so we pick up usage_metadata
+    (input/output/total tokens + total_cost) the moment the backend writes it,
+    then return it so the caller can copy it onto our own run."""
+    if not CREDIT_POLL_ENABLED:
+        return None
+    prev_s = 0.0
+    for offset_s in CREDIT_POLL_OFFSETS_S:
+        wait = (offset_s - prev_s) + random.uniform(0, CREDIT_POLL_JITTER_S)
+        time.sleep(wait)
+        prev_s = offset_s
+        try:
+            backend_run = _read_run_with_backoff(backend_run_id, agent)
+        except Exception as e:
+            continue
+        usage = (backend_run.outputs or {}).get("usage_metadata") if backend_run.outputs else None
+        if usage and (usage.get("total_cost") is not None or usage.get("total_tokens")):
+            print(f"💳 {agent}: cost found on backend run {backend_run_id} at +{offset_s}s "
+                  f"— total_cost={usage.get('total_cost')}, total_tokens={usage.get('total_tokens')}")
+            return usage
+    print(f"⚠️  {agent}: no cost on backend run {backend_run_id} after "
+          f"+{CREDIT_POLL_OFFSETS_S[-1]}s — giving up (mirrors server.js's own timeout)")
+    return None
+
+
 @traceable(run_type="llm")
 def run_agent(inputs: dict) -> dict:
-    """Process one prompt: POST it to the agent and return the final answer text.
-    Matches the server contract: agent in the URL path, category in metadata.
-    The agent is taken per-row from inputs["agent"] (ENERGY_AMI_AGENT_<pilot>),
-    falling back to the RAW_AGENT_NAME / AGENT_NAME env var."""
+    """Process one prompt: POST it to the agent and return the final answer text
+    plus the final executed SQL. Matches the server contract: agent in the URL
+    path, category in metadata. The agent is taken per-row from inputs["agent"]
+    (ENERGY_AMI_AGENT_<pilot>), falling back to the RAW_AGENT_NAME / AGENT_NAME env var."""
     agent = (inputs.get("agent") or AGENT or "").strip()
     if not agent:
         print("⚠️  No agent configured — set 'agent' on the dataset row or RAW_AGENT_NAME in .env")
-        return {"answer": ""}
+        return {"answer": "", "final_sql": ""}
     payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": inputs["question"]}]}],
         "tool_choice": {"type": "auto"},
@@ -193,8 +266,23 @@ def run_agent(inputs: dict) -> dict:
                 raise requests.HTTPError(f"{res.status_code} {res.reason}")
             res.raise_for_status()
 
-            answer_text   = ""
-            current_event = ""
+            answer_text     = ""
+            current_event   = ""
+            sql_hits: list[dict] = []   # ordered {sql, query_id} pulled from the stream
+            backend_run_id: str | None = None   # server.js's own LangSmith run for this call
+
+            def _collect_sql(node):
+                """Recursively pull every {sql, query_id} pair out of a parsed event."""
+                if isinstance(node, dict):
+                    s = node.get("sql")
+                    if isinstance(s, str) and s.strip():
+                        sql_hits.append({"sql": s.strip(), "query_id": node.get("query_id")})
+                    for v in node.values():
+                        _collect_sql(v)
+                elif isinstance(node, list):
+                    for v in node:
+                        _collect_sql(v)
+
             for line in res.iter_lines(decode_unicode=True):
                 if line.startswith("event:"):
                     current_event = line[6:].strip()
@@ -204,10 +292,41 @@ def run_agent(inputs: dict) -> dict:
                         data = json.loads(raw)
                         if current_event == "response.text.delta":
                             answer_text += data.get("text", "")
+                        elif current_event in ("response.tool_result", "response.tool_use"):
+                            _collect_sql(data)
+                        elif current_event == "response.run_id":
+                            # server.js: writeSseEvent(res, 'response.run_id', { run_id: langsmithRunId })
+                            rid = data.get("run_id")
+                            if isinstance(rid, str) and rid:
+                                backend_run_id = rid
                     except Exception:
                         pass
 
-            return {"answer": answer_text.strip()}
+            # Final SQL = the statement actually executed (last hit carrying a real
+            # query_id); fall back to the last SQL seen. Whitespace collapsed to one
+            # line, mirroring the backend's FINAL_SQL_QUERY.
+            final_sql = ""
+            if sql_hits:
+                final_hit = next((h for h in reversed(sql_hits) if h.get("query_id")), sql_hits[-1])
+                final_sql = re.sub(r"\s+", " ", final_hit["sql"]).strip()
+
+            # server.js never puts cost in the stream — it attaches Snowflake
+            # credit-derived cost to its OWN LangSmith run (backend_run_id)
+            # asynchronously, up to 300s later (see closeRunWithCredits /
+            # fetchCredits in server.js). Poll that run on the same schedule and
+            # copy its usage_metadata onto OUR run, otherwise the experiment's
+            # cost/token columns stay empty forever even though the backend's
+            # own trace eventually shows real numbers.
+            usage_metadata = _poll_backend_cost(backend_run_id, agent) if backend_run_id else None
+            if usage_metadata:
+                run_tree = get_current_run_tree()
+                if run_tree is not None:
+                    run_tree.set(usage_metadata=usage_metadata)
+            elif not backend_run_id:
+                print(f"⚠️  {agent}: no 'response.run_id' event in the stream — "
+                      f"can't locate server.js's LangSmith run to pull cost from.")
+
+            return {"answer": answer_text.strip(), "final_sql": final_sql}
 
         except (requests.Timeout, requests.ConnectionError,
                 requests.exceptions.ChunkedEncodingError, requests.HTTPError) as e:
@@ -222,7 +341,7 @@ def run_agent(inputs: dict) -> dict:
             break
 
     print(f"⚠️  Agent call failed for {agent} after {AGENT_RETRIES + 1} attempt(s): {last_err}")
-    return {"answer": ""}
+    return {"answer": "", "final_sql": ""}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -296,26 +415,22 @@ Judge how on-topic and responsive the answer is — NOT its factual accuracy.
 - 0.0  Empty, entirely off-topic, or a clear refusal of a valid in-domain request.
 Do not penalize minor inaccuracies, missing caveats, or reasonable assumptions."""
 
-LANGUAGE_RUBRIC = """You are a LANGUAGE-QUALITY evaluator for an AI energy-data assistant.
-Judge ONLY the language quality — clarity, grammar, tone, and formatting. Ignore
-whether the facts or data are correct.
-- 1.0  Clear, grammatically well-formed, appropriate professional tone and formatting.
-- 0.5  Understandable but awkward, or with noticeable grammar/formatting issues.
-- 0.0  Incoherent, empty, or written in the wrong language.
-Do not reward or penalize based on factual accuracy or relevance."""
-
 
 def _run_judge(key: str, rubric: str, run, example) -> dict:
     """Shared Bedrock judge scaffold. `key` names the metric; `rubric` swaps the
-    scoring criteria per metric."""
+    scoring criteria per metric. The final executed SQL is included so the judge
+    can weigh whether the query logic matches the question."""
     question     = _field(example, "question", "input") or ""
-    answer       = (run.outputs or {}).get("answer", "")
+    out          = run.outputs or {}
+    answer       = out.get("answer", "")
+    final_sql    = out.get("final_sql", "") or ""
     instructions = _field(example, "instructions") or ""
 
     if not answer:
         return {"key": key, "score": 0, "comment": "No answer returned"}
 
     guide_block = f"\nEXPECTED-ANSWER GUIDANCE:\n{instructions}" if instructions else ""
+    sql_block   = f"\nFINAL SQL EXECUTED:\n{final_sql[:2000]}" if final_sql else ""
 
     prompt = f"""{rubric}
 
@@ -323,7 +438,7 @@ QUESTION:
 {question}
 
 ASSISTANT ANSWER:
-{answer}{guide_block}
+{answer}{sql_block}{guide_block}
 
 Reply with ONLY a JSON object: {{"score": <0.0|0.5|1.0>, "reason": "<one sentence>"}}."""
 
@@ -352,6 +467,14 @@ def make_judge(key: str, rubric: str):
     return judge
 
 
+def final_sql(run, example) -> dict:
+    """Surfaces the executed SQL as its own column in the experiment results.
+    Informational only (no score) — the value is the cleaned, one-line final
+    statement the agent actually ran, mirroring the backend's FINAL_SQL_QUERY."""
+    sql = (run.outputs or {}).get("final_sql", "") or ""
+    return {"key": "final_sql", "score": None, "comment": sql if sql else "No SQL executed"}
+
+
 # ── Metric registry ───────────────────────────────────────────────────────────
 # One entry per metric: its CSV, its LangSmith dataset, the experiment prefix, and
 # its scoring rubric. Add/rename a metric here and in METRICS_TO_RUN.
@@ -371,15 +494,9 @@ METRIC_REGISTRY = {
     },
     "relevance": {
         "csv":     "golden_questions-relevance.csv",
-        "dataset": "energy-ami-agent-relevance",
-        "prefix":  "ami-relevance",
+        "dataset": "energy-ami-agent-test-models",
+        "prefix":  "ami-opus-4.8",
         "rubric":  RELEVANCE_RUBRIC,
-    },
-    "language": {
-        "csv":     "golden_questions-language.csv",
-        "dataset": "energy-ami-agent-language",
-        "prefix":  "ami-language",
-        "rubric":  LANGUAGE_RUBRIC,
     },
 }
 
@@ -442,7 +559,7 @@ if __name__ == "__main__":
         evaluate(
             run_agent,
             data=cfg["dataset"],
-            evaluators=[make_judge(metric, cfg["rubric"])],
+            evaluators=[make_judge(metric, cfg["rubric"]), final_sql],
             experiment_prefix=cfg["prefix"],
             max_concurrency=EVAL_MAX_CONCURRENCY,
             num_repetitions=N,
